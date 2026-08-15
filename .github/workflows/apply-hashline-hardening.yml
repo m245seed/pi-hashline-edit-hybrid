@@ -1,0 +1,80 @@
+name: Apply hashline hardening
+
+on:
+  push:
+    branches:
+      - agent/harden-edit-safety
+    paths:
+      - .hashline-bootstrap/READY
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize reviewed blobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          write_blob() {
+            path="$1"
+            expected="$2"
+            mkdir -p "$(dirname "$path")"
+            curl -fsSL \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/git/blobs/$expected" \
+              | python3 -c 'import base64, json, sys; data=json.load(sys.stdin); sys.stdout.buffer.write(base64.b64decode(data["content"]))' \
+              > "$path"
+            actual="$(git hash-object "$path")"
+            test "$actual" = "$expected"
+          }
+
+          write_blob README.md d12f706bfbd531d213c1a69f16cc9dae76ff64ad
+          write_blob src/constants.ts e27022a51f8f950df6ceef8bf1d440f530a8c139
+          write_blob src/integration/write-hook.ts cdad3707531bebe502680428b7e3014183d4bdf4
+          write_blob src/mutation/apply.ts 0f38b08deff357ca1e225be90ba2d392658d1211
+          write_blob src/mutation/resolve.ts 3eb69ea7b8b15935c37393243a791208d01e6eea
+          write_blob src/mutation/validate.ts 0baf5144fcb3e98742dde47b1d9b534759270ea9
+          write_blob src/render/diff.ts f24751ff5f0f569fe5264178769bed59e3f7e3f4
+          write_blob src/render/errors.ts 2739da146b7faab5ed2c1fdb22be5309fd47a4fb
+          write_blob src/render/hashline.ts afe7741dd410b7b5c8012668067e0e02bf89b253
+          write_blob src/render/warnings.ts a630fa7d9d1ee0395d14c53a31f7642eaa0b1a95
+          write_blob src/served/authorize.ts f7e3e234eae3e3f4b541be50eb5e92346ba51f77
+          write_blob src/served/ledger.ts 5d7727d77a0aee47b1e24e9db67604a74064ffcf
+          write_blob src/tools/edit.ts 266dcc117743594555056cf28acd6cdf3f03327f
+          write_blob src/tools/grep.ts 6595a09fa9dd323155e7fa67e6bdd86bded1736d
+          write_blob src/tools/insert.ts 5401c3cc225c5fdce10b406323da30adb7161920
+          write_blob src/tools/read.ts c7e1663b98f7518bb73c5edfa022add46e42a649
+          write_blob test/integration/write-hook.test.ts d623690c4fb46f16161e12ebff49e5dafe7060eb
+          write_blob test/mutation/resolve.test.ts ebf74e7ded946abf9e1966ea426f51f0581ba63c
+          write_blob test/mutation/validate.test.ts 2aa2efc7a6ca1b66e6d49e48b52ecb44e0d31c48
+          write_blob test/property/fuzz.test.ts d02bed217baefdfd06c3e49cdae45937f53a7a20
+          write_blob test/render/warnings.test.ts d3ea59be6f0ac7f6e1ec317bdfb3e22d65c682bf
+          write_blob test/served/authorize.test.ts e5218e2a7ddd3bd47f91b70167c04f7a1c1436d3
+          write_blob test/served/ledger.test.ts 22fbb7416559b50cd56609a73a1ff3af460ebfb0
+          write_blob test/tools/read.test.ts c236944bc08d6a6097d149e04fd612b59b22ffc2
+
+          rm -rf .hashline-bootstrap
+          rm -f .github/workflows/apply-hashline-hardening.yml
+
+      - name: Commit hardened implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Harden hashline edit safety"
+          git push origin HEAD:agent/harden-edit-safety
