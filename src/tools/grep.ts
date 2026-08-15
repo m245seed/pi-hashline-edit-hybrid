@@ -1,0 +1,404 @@
+/**
+ * `grep` tool (spec §24).
+ *
+ * Searches with ripgrep when available and renders matches with anchors
+ * from the same persistent anchor engine as `read` — never independently
+ * fabricated context hashes. Full match and context lines are marked
+ * served, so the workflow is `grep → edit` without a redundant read.
+ * Supports literal/regex search, file or directory roots, include/exclude
+ * globbing, before/after context, and a bounded result count.
+ */
+
+import { stat as fsStat } from "fs/promises";
+import { createInterface } from "readline";
+import { spawn, spawnSync } from "child_process";
+import { existsSync } from "fs";
+import { homedir } from "os";
+import { relative, basename, join } from "path";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { toCwd } from "../paths";
+import { abortIf } from "../utils";
+import { resolveTarget } from "../filesystem/resolve-target";
+import { loadAnchoredFile } from "../mutation/transaction";
+import { renderLinesUnserved } from "../render/hashline";
+import { serveLines } from "../served/ledger";
+
+export interface GrepToolDetails {
+  matches: number;
+  files: number;
+}
+
+const grepSchema = Type.Object(
+  {
+    pattern: Type.String({ description: "Search pattern (regex or literal)" }),
+    path: Type.Optional(
+      Type.String({ description: "File or directory to search (default: cwd)" }),
+    ),
+    glob: Type.Optional(
+      Type.String({ description: "File filter glob, e.g. '*.ts' or '**/*.spec.ts'" }),
+    ),
+    ignoreCase: Type.Optional(Type.Boolean()),
+    literal: Type.Optional(Type.Boolean()),
+    context: Type.Optional(Type.Integer({ minimum: 0 })),
+    limit: Type.Optional(Type.Integer({ minimum: 1 })),
+  },
+  { additionalProperties: false },
+);
+
+const G_DESC = `Search files with ripgrep and return matching lines with stable 4-character anchors (same engine as read), so results can drive edit/insert directly. Match lines and context lines are fully shown and become authorized for destructive edits.`;
+
+const G_SNIPPET =
+  "grep: anchored search; match and context lines carry edit-ready anchors, enabling grep → edit without a separate read.";
+
+const DEFAULT_LIMIT = 100;
+const MAX_OUTPUT_CHARS = 50 * 1024;
+
+function findRgPath(): string | null {
+  const piBin = join(homedir(), ".pi", "bin");
+  const rgName = process.platform === "win32" ? "rg.exe" : "rg";
+  if (existsSync(join(piBin, rgName))) return join(piBin, rgName);
+  try {
+    const result = spawnSync("rg", ["--version"], { stdio: "pipe" });
+    if (result.status === 0) return "rg";
+  } catch {}
+  return null;
+}
+
+const rgPath: string | null = findRgPath();
+
+interface LineEntry {
+  lineNumber: number;
+  text: string;
+  isMatch: boolean;
+}
+
+export function buildGrepToolDef(): ToolDefinition<any, GrepToolDetails> {
+  return {
+    name: "grep",
+    label: "Grep",
+    description: G_DESC,
+    promptSnippet: G_SNIPPET,
+    parameters: grepSchema,
+
+    async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
+      const params = rawParams as Record<string, unknown>;
+      const pattern = params?.pattern;
+      if (typeof pattern !== "string" || pattern.length === 0) {
+        throw new Error('[E_BAD_SHAPE] A non-empty "pattern" string is required.');
+      }
+      if (params?.glob !== undefined && typeof params.glob !== "string") {
+        throw new Error('[E_BAD_SHAPE] "glob" must be a string.');
+      }
+      if (params?.context !== undefined && (!Number.isInteger(params.context) || (params.context as number) < 0)) {
+        throw new Error('[E_BAD_SHAPE] "context" must be a non-negative integer.');
+      }
+      if (params?.limit !== undefined && (!Number.isInteger(params.limit) || (params.limit as number) < 1)) {
+        throw new Error('[E_BAD_SHAPE] "limit" must be a positive integer.');
+      }
+      const ignoreCase = params.ignoreCase === true;
+      const literal = params.literal === true;
+      const context = (params.context as number | undefined) && (params.context as number) > 0
+        ? (params.context as number)
+        : 0;
+      const limit = Math.max(1, (params.limit as number | undefined) ?? DEFAULT_LIMIT);
+      const searchDirRaw =
+        params.path && typeof params.path === "string" ? params.path : ".";
+      const searchPath = toCwd(searchDirRaw, ctx.cwd);
+
+      abortIf(signal);
+      if (!rgPath) {
+        throw new Error(
+          "ripgrep (rg) is not available. Install it: https://github.com/BurntSushi/ripgrep",
+        );
+      }
+      let isDirectory: boolean;
+      try {
+        isDirectory = (await fsStat(searchPath)).isDirectory();
+      } catch {
+        throw new Error(`Path not found: ${searchPath}`);
+      }
+
+      const fileEntries = await runRipgrep({
+        rgPath,
+        pattern,
+        searchPath,
+        glob: params.glob as string | undefined,
+        ignoreCase,
+        literal,
+        context,
+        limit,
+        signal,
+      });
+
+      const outputLines: string[] = [];
+      const notices: string[] = [];
+      let totalMatches = 0;
+      let fileCount = 0;
+      let skippedFiles = 0;
+      let crOnlyFiles = 0;
+      // Rows are rendered unserved and only committed to the served ledger
+      // once they survive the output budget — a line becomes served only
+      // when the model actually receives its complete contents.
+      const pendingServed = new Map<string, Array<{ anchor: string; exactText: string }>>();
+      let budget = MAX_OUTPUT_CHARS;
+      let truncated = false;
+      const pushLine = (line: string): boolean => {
+        if (line.length + 1 > budget) {
+          truncated = true;
+          return false;
+        }
+        budget -= line.length + 1;
+        outputLines.push(line);
+        return true;
+      };
+      const pushFileRow = (
+        realPath: string,
+        anchor: string,
+        exactText: string,
+        row: string,
+      ): boolean => {
+        if (!pushLine(row)) return false;
+        let entries = pendingServed.get(realPath);
+        if (!entries) {
+          entries = [];
+          pendingServed.set(realPath, entries);
+        }
+        entries.push({ anchor, exactText });
+        return true;
+      };
+
+      for (const [filePath, entries] of fileEntries) {
+        if (!entries.length) continue;
+        entries.sort((a, b) => a.lineNumber - b.lineNumber);
+        let realPath: string;
+        try {
+          realPath = await resolveTarget(filePath);
+        } catch {
+          skippedFiles++;
+          continue;
+        }
+        let file: Awaited<ReturnType<typeof loadAnchoredFile>>;
+        try {
+          file = await loadAnchoredFile(realPath, filePath);
+        } catch {
+          skippedFiles++;
+          continue;
+        }
+        const matchNums = entries.filter((e) => e.isMatch).map((e) => e.lineNumber);
+        totalMatches += matchNums.length;
+        fileCount++;
+
+        const displayPath = isDirectory
+          ? (relative(searchPath, filePath) || basename(filePath)).replace(/\\/g, "/")
+          : basename(filePath);
+
+        // ripgrep counts only \n (and \r\n) as line breaks; the hybrid
+        // document model also splits on lone \r. In CR-only files the line
+        // numbers cannot be aligned, so no anchors are shown for them.
+        const hasCrOnlyEndings = file.doc.lines.some((line) => line.eol === "\r");
+        if (hasCrOnlyEndings) {
+          crOnlyFiles++;
+          if (
+            pushLine(`\n${displayPath}`) &&
+            pushLine(
+              `[Line anchors unavailable: this file uses CR-only line endings, which cannot be aligned with ripgrep line numbers. ${matchNums.length} match(es) found. Use read to view and edit this file.]`,
+            )
+          ) {
+            continue;
+          }
+          truncated = true;
+          break;
+        }
+
+        if (!pushLine(`\n${displayPath}`)) break;
+        let stopped = false;
+        for (const entry of entries) {
+          const idx = entry.lineNumber - 1;
+          if (idx < 0 || idx >= file.texts.length) continue;
+          const { rows, served } = renderLinesUnserved(file.anchors, file.texts, idx, idx + 1);
+          for (let i = 0; i < rows.length; i++) {
+            const servedEntry = served[i];
+            if (servedEntry) {
+              if (!pushFileRow(realPath, servedEntry.anchor, servedEntry.exactText, rows[i]!)) {
+                stopped = true;
+                break;
+              }
+            } else if (!pushLine(rows[i]!)) {
+              stopped = true;
+              break;
+            }
+          }
+          if (stopped) break;
+        }
+        if (stopped) break;
+      }
+
+      for (const [path, entries] of pendingServed) {
+        serveLines(path, entries);
+      }
+
+      while (outputLines.length > 0 && outputLines[outputLines.length - 1] === "") {
+        outputLines.pop();
+      }
+      let output = outputLines.join("\n");
+      if (!output && skippedFiles === 0) {
+        return {
+          content: [{ type: "text", text: "No matches found" }],
+          details: { matches: totalMatches, files: fileCount },
+        };
+      }
+      if (truncated) {
+        notices.push(
+          `${MAX_OUTPUT_CHARS / 1024}KB output limit reached; later rows were cut before serving`,
+        );
+      }
+      if (skippedFiles > 0) {
+        notices.push(
+          `${skippedFiles} file(s) skipped: not readable as anchored text (binary, non-UTF-8, or oversized)`,
+        );
+      }
+      if (crOnlyFiles > 0) {
+        notices.push(`${crOnlyFiles} file(s) use CR-only line endings; no anchors shown for them`);
+      }
+      if (totalMatches >= limit) {
+        notices.push(`${limit} matches limit reached. Use limit=${limit * 2} for more, or refine the pattern.`);
+      }
+      if (notices.length > 0) {
+        output += `${output ? "\n\n" : ""}[${notices.join(". ")}]`;
+      }
+      return {
+        content: [{ type: "text", text: output }],
+        details: { matches: totalMatches, files: fileCount },
+      };
+    },
+  };
+}
+
+interface RunOptions {
+  rgPath: string;
+  pattern: string;
+  searchPath: string;
+  glob?: string;
+  ignoreCase: boolean;
+  literal: boolean;
+  context: number;
+  limit: number;
+  signal?: AbortSignal;
+}
+
+function runRipgrep(options: RunOptions): Promise<Map<string, LineEntry[]>> {
+  const { rgPath: rgExe, pattern, searchPath, glob, ignoreCase, literal, context, limit, signal } = options;
+  return new Promise((resolveFn, rejectFn) => {
+    if (signal?.aborted) {
+      rejectFn(new Error("Operation aborted"));
+      return;
+    }
+    const args: string[] = ["--json", "--line-number", "--color=never", "--hidden"];
+    if (ignoreCase) args.push("--ignore-case");
+    if (literal) args.push("--fixed-strings");
+    if (glob) args.push("--glob", glob);
+    if (context > 0) args.push("--context", String(context));
+    args.push("--", pattern, searchPath);
+
+    const child = spawn(rgExe, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const rl = createInterface({ input: child.stdout });
+    let stderr = "";
+    let settled = false;
+    let killedDueToLimit = false;
+    const settle = (fn: () => void): void => {
+      if (!settled) {
+        settled = true;
+        fn();
+      }
+    };
+    const stopChild = (): void => {
+      if (!child.killed) {
+        killedDueToLimit = true;
+        child.kill();
+      }
+    };
+    const onAbort = (): void => {
+      stopChild();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    const fileEntries = new Map<string, LineEntry[]>();
+    let currentFile = "";
+    let isFirstLine = true;
+    let matchCount = 0;
+    let limitReached = false;
+
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    rl.on("line", (raw) => {
+      if (!raw.trim()) return;
+      let event: {
+        type: string;
+        data?: { path?: { text?: string }; line_number?: number; lines?: { text?: string } };
+      };
+      try {
+        event = JSON.parse(raw) as typeof event;
+      } catch {
+        return;
+      }
+      if (event.type === "begin") {
+        currentFile = event.data?.path?.text ?? "";
+        fileEntries.set(currentFile, []);
+        isFirstLine = true;
+      } else if (event.type === "match" || event.type === "context") {
+        const num = event.data?.line_number;
+        const text = event.data?.lines?.text ?? "";
+        if (!num || !text) return;
+        const noBom = isFirstLine && text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+        isFirstLine = false;
+        const normalized = noBom.endsWith("\n") ? noBom.slice(0, -1) : noBom;
+        const entries = fileEntries.get(currentFile);
+        if (!entries) return;
+        const existing = entries.find((e) => e.lineNumber === num);
+        const isMatch = event.type === "match" || (existing?.isMatch ?? false);
+        if (existing) {
+          existing.isMatch = isMatch;
+        } else {
+          entries.push({ lineNumber: num, text: normalized, isMatch });
+        }
+        if (event.type === "match") {
+          matchCount++;
+          if (matchCount >= limit) {
+            limitReached = true;
+            stopChild();
+          }
+        }
+      }
+    });
+
+    child.on("error", (error) => {
+      rl.close();
+      signal?.removeEventListener("abort", onAbort);
+      settle(() => rejectFn(new Error(`Failed to run ripgrep: ${error.message}`)));
+    });
+
+    child.on("close", () => {
+      rl.close();
+      signal?.removeEventListener("abort", onAbort);
+      if (signal?.aborted) {
+        settle(() => rejectFn(new Error("Operation aborted")));
+        return;
+      }
+      if (!killedDueToLimit && child.exitCode !== 0 && child.exitCode !== 1) {
+        settle(() =>
+          rejectFn(new Error(stderr.trim() || `ripgrep exited with code ${child.exitCode}`)),
+        );
+        return;
+      }
+      void limitReached;
+      settle(() => resolveFn(fileEntries));
+    });
+  });
+}
+
+export function registerGrepTool(pi: ExtensionAPI): void {
+  pi.registerTool(buildGrepToolDef());
+}

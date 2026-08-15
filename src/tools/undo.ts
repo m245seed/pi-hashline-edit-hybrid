@@ -1,0 +1,192 @@
+/**
+ * `undo` tool (spec §32–§36).
+ *
+ * Reverts the last successful hybrid transaction on one file (all sub-edits
+ * together). Precondition: the file's current checksum must exactly match
+ * the previous transaction's result — otherwise E_UNDO_STALE and nothing is
+ * modified, so undo never overwrites later work. Restores exact previous
+ * bytes (BOM, CRLF/CR/LF, final newline, trailing whitespace) and exact
+ * previous anchors: anchors present before the transaction return exactly;
+ * anchors introduced by the undone transaction become retired.
+ */
+
+import { readFile } from "fs/promises";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { toCwd } from "../paths";
+import { abortIf, errCode, sha256Hex } from "../utils";
+import { withFileMutationQueue } from "../filesystem/concurrency";
+import { resolveTarget } from "../filesystem/resolve-target";
+import { loadStore } from "../state/database";
+import { getUndoRecord } from "../state/undo";
+import { decodeDocument } from "../document/decode";
+import { buildDiffRows } from "../mutation/apply";
+import {
+  commitMutation,
+  newTransactionIdFor,
+} from "../mutation/transaction";
+import { renderDiff } from "../render/diff";
+import type { MutationMetrics } from "./edit";
+
+export interface UndoToolDetails {
+  diff?: string;
+  metrics?: MutationMetrics;
+}
+
+const undoSchema = Type.Object(
+  {
+    path: Type.String({ description: "Path to the file to undo" }),
+  },
+  { additionalProperties: false },
+);
+
+const U_DESC = `Revert the last successful hybrid transaction on one file — if one call changed five ranges, undo restores all five together. The file must still match the state produced by that transaction; if it was modified afterwards, undo fails without overwriting anything. Undo restores exact bytes and exact anchors.`;
+
+const U_SNIPPET =
+  "undo: revert the last hybrid transaction on a file; fails (E_UNDO_STALE) if the file changed since, so it never destroys later work.";
+
+export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
+  return {
+    name: "undo",
+    label: "Undo",
+    description: U_DESC,
+    promptSnippet: U_SNIPPET,
+    parameters: undoSchema,
+
+    async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
+      const params = rawParams as Record<string, unknown>;
+      if (typeof params?.path !== "string" || params.path.length === 0) {
+        throw new Error('[E_BAD_SHAPE] A non-empty "path" string is required.');
+      }
+      const requestPath = params.path;
+      const absolutePath = toCwd(requestPath, ctx.cwd);
+      const mutationTargetPath = await resolveTarget(absolutePath);
+
+      return withFileMutationQueue(mutationTargetPath, async () => {
+        abortIf(signal);
+        const store = await loadStore();
+        const record = getUndoRecord(store, mutationTargetPath);
+        if (!record) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `[E_NO_UNDO] No undoable hybrid transaction for ${requestPath}. Nothing was modified.`,
+              },
+            ],
+            isError: true,
+            details: {},
+          };
+        }
+
+        let raw: Buffer;
+        try {
+          raw = await readFile(mutationTargetPath);
+        } catch (error: unknown) {
+          if (errCode(error) === "ENOENT") {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `[E_UNDO_STALE] The file ${requestPath} no longer exists. Nothing was modified.`,
+                },
+              ],
+              isError: true,
+              details: {},
+            };
+          }
+          throw error;
+        }
+        const currentChecksum = sha256Hex(raw);
+        if (currentChecksum !== record.afterChecksum) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `[E_UNDO_STALE] The file has changed since the transaction. Nothing was modified. Undo never overwrites later modifications.`,
+              },
+            ],
+            isError: true,
+            details: {},
+          };
+        }
+
+        const afterDoc = decodeDocument(record.beforeBytes, requestPath);
+        if (afterDoc.lines.length !== record.beforeAnchors.length) {
+          throw new Error(
+            `[E_STATE_CORRUPT] The stored undo state for ${requestPath} is inconsistent with the file. Nothing was modified.`,
+          );
+        }
+        const afterRaw = record.beforeBytes;
+        const afterChecksum = sha256Hex(afterRaw);
+        const beforeAnchorsSet = new Set(record.beforeAnchors);
+        const restoredRetired = new Set(record.beforeRetired);
+        for (const anchor of record.afterAnchors) {
+          if (!beforeAnchorsSet.has(anchor)) restoredRetired.add(anchor);
+        }
+
+        const currentDoc = decodeDocument(raw, requestPath);
+        const currentTexts = currentDoc.lines.map((line) => line.text);
+        const diffRows = buildDiffRows(
+          currentTexts,
+          record.afterAnchors,
+          afterDoc.lines.map((line) => line.text),
+          record.beforeAnchors,
+        );
+
+        const transactionId = newTransactionIdFor();
+        abortIf(signal);
+        await commitMutation({
+          realPath: mutationTargetPath,
+          label: requestPath,
+          rawBefore: raw,
+          checksumBefore: currentChecksum,
+          docBefore: currentDoc,
+          anchorsBefore: record.afterAnchors,
+          fingerprintsBefore: record.afterFingerprints,
+          retiredBefore: record.afterRetired,
+          rawAfter: afterRaw,
+          checksumAfter: afterChecksum,
+          docAfter: afterDoc,
+          anchorsAfter: record.beforeAnchors,
+          fingerprintsAfter: record.beforeFingerprints,
+          retiredAfter: restoredRetired,
+          transactionId,
+          signal,
+          keepUndo: false,
+          warnings: [],
+        });
+
+        const diffText = renderDiff(mutationTargetPath, diffRows);
+        let linesAdded = 0;
+        let linesRemoved = 0;
+        for (const row of diffRows) {
+          if (row.prefix === "+") linesAdded++;
+          if (row.prefix === "-") linesRemoved++;
+        }
+        const metrics: MutationMetrics = {
+          classification: "applied",
+          edits_attempted: 1,
+          edits_applied: 1,
+          edits_noop: 0,
+          lines_added: linesAdded,
+          lines_removed: linesRemoved,
+          warnings: 0,
+          before_revision: currentChecksum,
+          after_revision: afterChecksum,
+          transaction_id: transactionId,
+        };
+        const text =
+          `Undone the last transaction on ${requestPath}. The file was restored to its exact previous bytes and anchors.\n\n${diffText}`;
+        return {
+          content: [{ type: "text", text }],
+          details: { diff: diffText, metrics },
+        };
+      });
+    },
+  };
+}
+
+export function registerUndoTool(pi: ExtensionAPI): void {
+  pi.registerTool(buildUndoToolDef());
+}
