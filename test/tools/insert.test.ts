@@ -4,6 +4,7 @@ import { makeProject, runTool, textOf, writeFileAt, readFileAt } from "../suppor
 import { initHasher } from "../../src/anchors/hasher";
 import { resetStoreForTests } from "../../src/state/database";
 import { resetServed } from "../../src/served/ledger";
+import { advanceContextEpoch } from "../../src/served/epoch";
 import { buildInsertToolDef } from "../../src/tools/insert";
 import { buildReadToolDef } from "../../src/tools/read";
 import { join } from "path";
@@ -85,7 +86,7 @@ describe("insert tool (spec §23)", () => {
     expect(readFileAt(join(dir, "a.ts"))).toBe("X\nA\nB\nY\n");
   });
 
-  it("rejects an unserved anchor line (E_RANGE_UNSERVED)", async () => {
+  it("rejects an unserved anchor line (E_ANCHOR_NOT_SERVED)", async () => {
     const dir = makeProject();
     writeFileAt(dir, "a.ts", "X\nY\nZ\n");
     // Read only line 2.
@@ -108,7 +109,7 @@ describe("insert tool (spec §23)", () => {
         { path: "a.ts", inserts: [{ anchor: anchorX2, direction: "after", lines: ["N"] }] },
         dir,
       ),
-    ).rejects.toThrow(/E_RANGE_UNSERVED/);
+    ).rejects.toThrow(/E_ANCHOR_NOT_SERVED/);
     expect(readFileAt(join(dir, "a.ts"))).toBe("X\nY\nZ\n");
   });
 
@@ -169,7 +170,7 @@ describe("insert tool (spec §23)", () => {
         },
         dir,
       ),
-    ).rejects.toThrow(/E_RANGE_UNSERVED/);
+    ).rejects.toThrow(/E_ANCHOR_NOT_SERVED/);
     expect(readFileAt(join(dir, "a.ts"))).toBe("X\nY\nZ\n");
   });
 
@@ -201,5 +202,21 @@ describe("insert tool (spec §23)", () => {
     );
     expect(before.isError).toBeFalsy();
     expect(readFileAt(join(dir, "empty.ts"))).toBe("hello\n");
+  });
+
+  it("rejects an insert anchor served in an older context epoch (PH-CONTEXT-003)", async () => {
+    const dir = makeProject();
+    writeFileAt(dir, "a.ts", "X\nY\nZ\n");
+    const read = await runTool(readTool, { path: "a.ts" }, dir);
+    const anchorY = anchorsFromRead(textOf(read)).get("Y")!;
+    advanceContextEpoch("session_compact");
+    await expect(
+      runTool(
+        insertTool,
+        { path: "a.ts", inserts: [{ anchor: anchorY, direction: "after", lines: ["N"] }] },
+        dir,
+      ),
+    ).rejects.toThrow(/E_CONTEXT_EPOCH_STALE/);
+    expect(readFileAt(join(dir, "a.ts"))).toBe("X\nY\nZ\n");
   });
 });

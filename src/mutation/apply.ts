@@ -257,7 +257,7 @@ export function applyTransaction(
     const overlap = findOverlap(sortedSpans);
     if (overlap) {
       throw new Error(
-        `[E_OVERLAPPING_EDITS] Requested edit #${overlap[0] + 1} overlaps edit #${overlap[1] + 1}. Ranges that share any line — even a single endpoint line — are invalid. Nothing was modified.`,
+        `[E_RANGE_OVERLAP] Requested edit #${overlap[0] + 1} overlaps edit #${overlap[1] + 1}. Ranges that share any line — even a single endpoint line — are invalid. Nothing was modified.`,
       );
     }
   }

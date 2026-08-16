@@ -1,10 +1,10 @@
 /**
- * Anchor resolution (spec §10, §54).
+ * Anchor resolution (spec §10, §54, §31.10).
  *
  * References are resolved against the current document by anchor identity,
  * never by line number and never by fuzzy matching. A reference that is no
  * longer current fails with E_ANCHOR_STALE; reversed ranges fail with
- * E_BAD_RANGE and are never swapped automatically (spec §16).
+ * E_RANGE_REVERSED and are never swapped automatically (spec §16).
  */
 
 import { MAX_FEEDBACK_LINES } from "../constants";
@@ -62,5 +62,5 @@ export function reversedRangeMessage(
   startAnchor: string,
   endAnchor: string,
 ): string {
-  return `[E_BAD_RANGE] Range start occurs after range end${path ? ` in ${path}` : ""} (start anchor "${startAnchor}" is after end anchor "${endAnchor}"). Nothing was modified. The anchors were not swapped; send the range in document order.`;
+  return `[E_RANGE_REVERSED] Range start occurs after range end${path ? ` in ${path}` : ""} (start anchor "${startAnchor}" is after end anchor "${endAnchor}"). Nothing was modified. The anchors were not swapped; send the range in document order.`;
 }

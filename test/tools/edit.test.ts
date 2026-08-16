@@ -98,7 +98,7 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
     expect(readFileAt(joinPath(dir, "a.ts"))).toBe("one\nTWO!!\ntwo.5\nthree\n");
   });
 
-  it("rejects an unserved range with E_RANGE_UNSERVED and zero mutation", async () => {
+  it("rejects an unserved range with E_ANCHOR_NOT_SERVED and zero mutation", async () => {
     const dir = makeProject();
     writeFileAt(dir, "a.ts", "one\ntwo\nthree\nfour\nfive\n");
     // Read only the first line.
@@ -118,7 +118,7 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
         { path: "a.ts", edits: [{ range: [first, last], lines: [] }] },
         dir,
       ),
-    ).rejects.toThrow(/E_RANGE_UNSERVED/);
+    ).rejects.toThrow(/E_ANCHOR_NOT_SERVED/);
     expect(readFileAt(joinPath(dir, "a.ts"))).toBe("one\ntwo\nthree\nfour\nfive\n");
   });
 
@@ -166,7 +166,7 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
         { path: "a.ts", edits: [{ range: [last, first], lines: ["X"] }] },
         dir,
       ),
-    ).rejects.toThrow(/E_BAD_RANGE/);
+    ).rejects.toThrow(/E_RANGE_REVERSED/);
     expect(readFileAt(joinPath(dir, "a.ts"))).toBe("one\ntwo\nthree\n");
   });
 
@@ -188,7 +188,7 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
         },
         dir,
       ),
-    ).rejects.toThrow(/E_OVERLAPPING_EDITS/);
+    ).rejects.toThrow(/E_RANGE_OVERLAP/);
     expect(readFileAt(joinPath(dir, "a.ts"))).toBe("1\n2\n3\n4\n5\n6\n");
   });
 
@@ -204,7 +204,7 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
         { path: "a.ts", edits: [{ range: [first!, first!], lines: ["Ab31│console.log(\"x\")"] }] },
         dir,
       ),
-    ).rejects.toThrow(/E_SUSPICIOUS_PATCH/);
+    ).rejects.toThrow(/E_DISPLAY_LIKE_CONTENT/);
     expect(readFileAt(joinPath(dir, "a.ts"))).toBe("one\ntwo\n");
   });
 
@@ -227,19 +227,19 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
     expect(readFileAt(joinPath(dir, "a.ts"))).toBe("Ab31│literal\ntwo\n");
   });
 
-  it("applies literally when a replacement duplicates boundary content (spec §18)", async () => {
+  it("rejects a replacement that duplicates boundary content before commit (spec §18, PH-EDIT-001/002)", async () => {
     const dir = makeProject();
     writeFileAt(dir, "a.ts", "one\ntwo\nthree\n");
     const read = await runTool(readTool, { path: "a.ts" }, dir);
     const anchors = anchorsFromRead(textOf(read));
-    const result = await runTool(
-      editTool,
-      { path: "a.ts", edits: [{ range: [anchors.get("two")!, anchors.get("two")!], lines: ["two", "three"] }] },
-      dir,
-    );
-    expect(result.isError).toBeFalsy();
-    expect(readFileAt(joinPath(dir, "a.ts"))).toBe("one\ntwo\nthree\nthree\n");
-    expect(textOf(result)).toContain("[W_BOUNDARY_DUP]");
+    await expect(
+      runTool(
+        editTool,
+        { path: "a.ts", edits: [{ range: [anchors.get("two")!, anchors.get("two")!], lines: ["two", "three"] }] },
+        dir,
+      ),
+    ).rejects.toThrow(/E_BOUNDARY_DUP/);
+    expect(readFileAt(joinPath(dir, "a.ts"))).toBe("one\ntwo\nthree\n");
   });
 
   it("reports no-op transactions without touching the file (spec §21)", async () => {

@@ -14,6 +14,8 @@ export const EDIT_ROOT_KEYS = new Set([
   "path",
   "edits",
   "allow_display_like_content",
+  "allow_boundary_duplicate",
+  "allow_large_change",
   "final_newline",
   "expected_revision",
 ]);
@@ -39,6 +41,10 @@ export interface EditRequest {
   path: string;
   edits: EditItem[];
   allow_display_like_content?: boolean;
+  /** PH-EDIT-003: explicit top-level escape hatch for boundary duplication. */
+  allow_boundary_duplicate?: boolean;
+  /** PH-EDIT-008: explicit override for the large destructive edit guard. */
+  allow_large_change?: boolean;
   final_newline?: FinalNewline;
   expected_revision?: string;
 }
@@ -98,7 +104,7 @@ export function assertLines(
     }
     if (line.includes("\n") || line.includes("\r")) {
       throw new Error(
-        `[E_BAD_SHAPE] ${label} "lines" entry ${i + 1} contains a line break. Each array entry is exactly one logical line; split it into separate entries.`,
+        `[E_EMBEDDED_NEWLINE] ${label} "lines" entry ${i + 1} contains a line break. Each array entry is exactly one logical line; split it into separate entries.`,
       );
     }
     if (CONTROL_RE.test(line)) {
@@ -129,7 +135,7 @@ export function suspiciousContentCheck(
 ): void {
   if (!allowDisplayLike && DISPLAY_LIKE_RE.test(line)) {
     throw new Error(
-      `[E_SUSPICIOUS_PATCH] Replacement content resembles hashline-rendered tool output: ${JSON.stringify(line.slice(0, 40))}. Nothing was modified. If this text is intentionally literal, resend with "allow_display_like_content": true.`,
+      `[E_DISPLAY_LIKE_CONTENT] Replacement content resembles hashline-rendered tool output: ${JSON.stringify(line.slice(0, 40))}. Nothing was modified. If this text is intentionally literal, resend with "allow_display_like_content": true.`,
     );
   }
 }
@@ -170,6 +176,15 @@ export function validateEditRequest(request: unknown): EditRequest {
   ) {
     throw new Error('[E_BAD_SHAPE] "allow_display_like_content" must be a boolean.');
   }
+  if (
+    request.allow_boundary_duplicate !== undefined &&
+    typeof request.allow_boundary_duplicate !== "boolean"
+  ) {
+    throw new Error('[E_BAD_SHAPE] "allow_boundary_duplicate" must be a boolean.');
+  }
+  if (request.allow_large_change !== undefined && typeof request.allow_large_change !== "boolean") {
+    throw new Error('[E_BAD_SHAPE] "allow_large_change" must be a boolean.');
+  }
   const edits: EditItem[] = [];
   for (let i = 0; i < request.edits.length; i++) {
     const item = request.edits[i];
@@ -198,6 +213,8 @@ export function validateEditRequest(request: unknown): EditRequest {
     path,
     edits,
     allow_display_like_content: request.allow_display_like_content,
+    allow_boundary_duplicate: request.allow_boundary_duplicate,
+    allow_large_change: request.allow_large_change,
     final_newline: assertFinalNewline(request.final_newline),
     expected_revision: assertExpectedRevision(request.expected_revision),
   };

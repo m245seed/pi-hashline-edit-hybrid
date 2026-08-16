@@ -124,7 +124,7 @@ describe("applyTransaction — replacement (spec §6, §70)", () => {
         edit(0, 2, ["X"], 0),
         edit(2, 4, ["Y"], 1),
       ]),
-    ).toThrow(/E_OVERLAPPING_EDITS/);
+    ).toThrow(/E_RANGE_OVERLAP/);
   });
 
   it("rejects ranges sharing an endpoint line (spec §20)", () => {
@@ -134,7 +134,7 @@ describe("applyTransaction — replacement (spec §6, §70)", () => {
         edit(0, 2, ["X"], 0),
         edit(2, 3, ["Y"], 1),
       ]),
-    ).toThrow(/E_OVERLAPPING_EDITS/);
+    ).toThrow(/E_RANGE_OVERLAP/);
   });
 
   it("rejects duplicate ranges", () => {
@@ -144,7 +144,7 @@ describe("applyTransaction — replacement (spec §6, §70)", () => {
         edit(0, 0, ["X"], 0),
         edit(0, 0, ["Y"], 1),
       ]),
-    ).toThrow(/E_OVERLAPPING_EDITS/);
+    ).toThrow(/E_RANGE_OVERLAP/);
   });
 
   it("allows adjacent ranges", () => {
@@ -213,7 +213,7 @@ describe("applyTransaction — insert (spec §23)", () => {
         edit(0, 3, ["X"], 0),
         insert(2, "after", ["Y"], 1),
       ]),
-    ).toThrow(/E_OVERLAPPING_EDITS/);
+    ).toThrow(/E_RANGE_OVERLAP/);
   });
 });
 

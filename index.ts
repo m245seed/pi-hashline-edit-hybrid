@@ -1,29 +1,45 @@
 /**
  * pi-hashline-edit-hybrid — fail-closed, hash-anchored text mutation for
- * Pi coding agents (spec §1).
+ * Pi coding agents (spec §1, §31).
  *
- * Tools: read, grep, edit, insert, undo. The generic pi `edit` tool is
- * replaced by the hybrid `edit` tool (custom tools override built-ins by
- * name). A successful `write` triggers anchor reconciliation and an
- * optional auto-read preview.
+ * Tools: read, grep, edit, insert, write, undo. The generic pi `edit` and
+ * `write` tools are replaced by the hybrid tools (custom tools override
+ * built-ins by name); the hashline `write` override is the sole safe_write
+ * owner (PH-WRITE-003). A successful external `write` triggers anchor
+ * reconciliation and an optional auto-read preview.
+ *
+ * When Pi exposes a shared event bus, hashline registers the Sentinel IPC
+ * protocol (spec §12, §31.11): capability announcement, mutation events,
+ * freeze handling, and context-epoch synchronization. Hashline remains fully
+ * functional and strictly safe when Sentinel is absent.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerReadTool } from "./src/tools/read";
-import { registerGrepTool } from "./src/tools/grep";
-import { registerEditTool } from "./src/tools/edit";
-import { registerInsertTool } from "./src/tools/insert";
-import { registerUndoTool } from "./src/tools/undo";
+import { buildReadToolDef } from "./src/tools/read";
+import { buildGrepToolDef } from "./src/tools/grep";
+import { buildEditToolDef } from "./src/tools/edit";
+import { buildInsertToolDef } from "./src/tools/insert";
+import { buildWriteToolDef } from "./src/tools/write";
+import { buildUndoToolDef } from "./src/tools/undo";
 import { registerWriteHook } from "./src/integration/write-hook";
 import { registerSession } from "./src/integration/session";
+import { registerIpc } from "./src/integration/ipc";
 
 export default function (pi: ExtensionAPI): void {
   const autoReadState = { value: true };
-  registerReadTool(pi);
-  registerGrepTool(pi);
-  registerEditTool(pi);
-  registerInsertTool(pi);
-  registerUndoTool(pi);
+  const readTool = buildReadToolDef();
+  const grepTool = buildGrepToolDef();
+  const editTool = buildEditToolDef();
+  const insertTool = buildInsertToolDef();
+  const writeTool = buildWriteToolDef();
+  const undoTool = buildUndoToolDef();
+  pi.registerTool(readTool);
+  pi.registerTool(grepTool);
+  pi.registerTool(editTool);
+  pi.registerTool(insertTool);
+  pi.registerTool(writeTool);
+  pi.registerTool(undoTool);
   registerWriteHook(pi, () => autoReadState.value);
   registerSession(pi, autoReadState);
+  registerIpc(pi, [readTool, grepTool, editTool, insertTool, writeTool, undoTool]);
 }

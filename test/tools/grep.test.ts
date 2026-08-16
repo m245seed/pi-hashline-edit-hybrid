@@ -136,7 +136,7 @@ describe("grep tool (spec §24)", () => {
     expect(servedCount).toBe(visibleRows.length);
     // Every served entry corresponds to a row the model actually received.
     for (const row of visibleRows) {
-      expect(ledger?.get(row.slice(0, 4))).toBe(row.slice(5));
+      expect(ledger?.get(row.slice(0, 4))?.exactText).toBe(row.slice(5));
     }
   });
 

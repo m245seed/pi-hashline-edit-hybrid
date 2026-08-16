@@ -41,10 +41,10 @@ describe("strict payload validation (spec §15, §17)", () => {
   it("rejects line values containing newlines", () => {
     expect(() =>
       validateEditRequest({ path: "f", edits: [{ range: ["Ab12", "Cd34"], lines: ["a\nb"] }] }),
-    ).toThrow(/E_BAD_SHAPE/);
+    ).toThrow(/E_EMBEDDED_NEWLINE/);
     expect(() =>
       validateEditRequest({ path: "f", edits: [{ range: ["Ab12", "Cd34"], lines: ["a\rb"] }] }),
-    ).toThrow(/E_BAD_SHAPE/);
+    ).toThrow(/E_EMBEDDED_NEWLINE/);
   });
 
   it("rejects unsupported control bytes", () => {
@@ -92,10 +92,10 @@ describe("suspicious hashline content (spec §17)", () => {
     it(`rejects ${JSON.stringify(content.slice(0, 8))} without override`, () => {
       expect(() =>
         validateEditRequest({ path: "f", edits: [{ range: ["Ab12", "Cd34"], lines: [content] }] }),
-      ).toThrow(/E_SUSPICIOUS_PATCH/);
+      ).toThrow(/E_DISPLAY_LIKE_CONTENT/);
       expect(() =>
         validateInsertRequest({ path: "f", inserts: [{ anchor: "Ab12", direction: "after", lines: [content] }] }),
-      ).toThrow(/E_SUSPICIOUS_PATCH/);
+      ).toThrow(/E_DISPLAY_LIKE_CONTENT/);
     });
   }
 

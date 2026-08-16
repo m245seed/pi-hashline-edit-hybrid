@@ -302,6 +302,7 @@ describe("property: chained tool-level edits (spec §62)", () => {
         const start = keys[startIdx]!;
         const end = keys[endIdx]!;
         const lines = randomLines(rand, 1 + Math.floor(rand() * 3));
+        const before = readFileAt(file);
         let result;
         try {
           result = await runTool(
@@ -310,7 +311,14 @@ describe("property: chained tool-level edits (spec §62)", () => {
             dir,
           );
         } catch (error) {
-          console.log("TOOL FAIL iter", iter, JSON.stringify({ start, end, lines }), (error as Error).message.slice(0, 120));
+          const message = (error as Error).message;
+          // Safety preflights (PH-EDIT-001/006) may reject random edits;
+          // they must leave the file untouched.
+          if (/E_BOUNDARY_DUP|E_LARGE_DESTRUCTIVE_EDIT/.test(message)) {
+            expect(readFileAt(file)).toBe(before);
+            continue;
+          }
+          console.log("TOOL FAIL iter", iter, JSON.stringify({ start, end, lines }), message.slice(0, 120));
           throw error;
         }
         expect(result.isError).toBeFalsy();
@@ -318,7 +326,14 @@ describe("property: chained tool-level edits (spec §62)", () => {
       } else {
         // Occasional undo: must restore exact bytes.
         const before = readFileAt(file);
-        const r = await runTool(editTool, { path: "fuzz.ts", edits: [{ range: [keys[0]!, keys[0]!], lines: ["TOUCH"] }] }, dir);
+        let r;
+        try {
+          r = await runTool(editTool, { path: "fuzz.ts", edits: [{ range: [keys[0]!, keys[0]!], lines: ["TOUCH"] }] }, dir);
+        } catch {
+          // Preflight rejection (e.g. boundary dup against a neighbor).
+          expect(readFileAt(file)).toBe(before);
+          continue;
+        }
         if (r.isError) continue;
         const undo = await runTool(undoTool, { path: "fuzz.ts" }, dir);
         expect(undo.isError).toBeFalsy();
@@ -367,7 +382,7 @@ describe("property: chained tool-level edits (spec §62)", () => {
       }
       if (result.isError) {
         const message = textOf(result);
-        expect(message).toMatch(/E_ANCHOR_STALE|E_RANGE_UNSERVED|E_RANGE_STALE|E_COMMIT_STALE|E_FILE_REVISION_CHANGED/);
+        expect(message).toMatch(/E_ANCHOR_STALE|E_ANCHOR_NOT_SERVED|E_RANGE_STALE|E_FILE_CHANGED|E_FILE_REVISION_CHANGED/);
         // Nothing was modified on a rejection.
         expect(readFileAt(file)).toBe(external);
       } else {

@@ -1,5 +1,5 @@
 /**
- * `undo` tool (spec §32–§36).
+ * `undo` tool (spec §32–§36, PH-PROTO-001..003, PH-CONTEXT-005).
  *
  * Reverts the last successful hybrid transaction on one file (all sub-edits
  * together). Precondition: the file's current checksum must exactly match
@@ -8,6 +8,9 @@
  * bytes (BOM, CRLF/CR/LF, final newline, trailing whitespace) and exact
  * previous anchors: anchors present before the transaction return exactly;
  * anchors introduced by the undone transaction become retired.
+ *
+ * Undo history and file identity are independent of the context epoch
+ * (PH-CONTEXT-005): undo works regardless of epoch advances.
  */
 
 import { readFile } from "fs/promises";
@@ -26,21 +29,28 @@ import {
   newTransactionIdFor,
 } from "../mutation/transaction";
 import { renderDiff } from "../render/diff";
+import { hashlineDetails } from "../render/result-details";
+import { isFrozen, frozenRejection } from "../integration/freeze";
+import { emitUndoAfter } from "../integration/ipc";
 import type { MutationMetrics } from "./edit";
 
 export interface UndoToolDetails {
   diff?: string;
   metrics?: MutationMetrics;
+  hashline: ReturnType<typeof hashlineDetails>;
 }
 
 const undoSchema = Type.Object(
   {
     path: Type.String({ description: "Path to the file to undo" }),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    $id: "pi-hashline/undo@1",
+  },
 );
 
-const U_DESC = `Revert the last successful hybrid transaction on one file — if one call changed five ranges, undo restores all five together. The file must still match the state produced by that transaction; if it was modified afterwards, undo fails without overwriting anything. Undo restores exact bytes and exact anchors.`;
+const U_DESC = `Protocol-ID: pi-hashline/1 (anchor width 4). Revert the last successful hybrid transaction on one file — if one call changed five ranges, undo restores all five together. The file must still match the state produced by that transaction; if it was modified afterwards, undo fails without overwriting anything. Undo restores exact bytes and exact anchors.`;
 
 const U_SNIPPET =
   "undo: revert the last hybrid transaction on a file; fails (E_UNDO_STALE) if the file changed since, so it never destroys later work.";
@@ -52,8 +62,9 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
     description: U_DESC,
     promptSnippet: U_SNIPPET,
     parameters: undoSchema,
+    executionMode: "sequential",
 
-    async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
+    async execute(toolCallId, rawParams, signal, _onUpdate, ctx) {
       const params = rawParams as Record<string, unknown>;
       if (typeof params?.path !== "string" || params.path.length === 0) {
         throw new Error('[E_BAD_SHAPE] A non-empty "path" string is required.');
@@ -63,10 +74,20 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
       const mutationTargetPath = await resolveTarget(absolutePath);
 
       return withFileMutationQueue(mutationTargetPath, async () => {
+        // PH §12.5: destructive tools reject while a Sentinel freeze is active.
+        if (isFrozen()) {
+          throw new Error(frozenRejection("undo"));
+        }
         abortIf(signal);
         const store = await loadStore();
         const record = getUndoRecord(store, mutationTargetPath);
         if (!record) {
+          emitUndoAfter({
+            transactionId: "",
+            toolCallId,
+            success: false,
+            code: "E_NO_UNDO",
+          });
           return {
             content: [
               {
@@ -75,7 +96,13 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
               },
             ],
             isError: true,
-            details: {},
+            details: {
+              hashline: hashlineDetails({
+                outcome: "rejected",
+                code: "E_NO_UNDO",
+                servedRows: 0,
+              }),
+            },
           };
         }
 
@@ -84,6 +111,12 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
           raw = await readFile(mutationTargetPath);
         } catch (error: unknown) {
           if (errCode(error) === "ENOENT") {
+            emitUndoAfter({
+              transactionId: record.transactionId,
+              toolCallId,
+              success: false,
+              code: "E_UNDO_STALE",
+            });
             return {
               content: [
                 {
@@ -92,13 +125,25 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
                 },
               ],
               isError: true,
-              details: {},
+              details: {
+                hashline: hashlineDetails({
+                  outcome: "rejected",
+                  code: "E_UNDO_STALE",
+                  servedRows: 0,
+                }),
+              },
             };
           }
           throw error;
         }
         const currentChecksum = sha256Hex(raw);
         if (currentChecksum !== record.afterChecksum) {
+          emitUndoAfter({
+            transactionId: record.transactionId,
+            toolCallId,
+            success: false,
+            code: "E_UNDO_STALE",
+          });
           return {
             content: [
               {
@@ -107,7 +152,13 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
               },
             ],
             isError: true,
-            details: {},
+            details: {
+              hashline: hashlineDetails({
+                outcome: "rejected",
+                code: "E_UNDO_STALE",
+                servedRows: 0,
+              }),
+            },
           };
         }
 
@@ -157,7 +208,7 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
           warnings: [],
         });
 
-        const diffText = renderDiff(mutationTargetPath, diffRows);
+        const diff = renderDiff(mutationTargetPath, diffRows);
         let linesAdded = 0;
         let linesRemoved = 0;
         for (const row of diffRows) {
@@ -177,10 +228,27 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
           transaction_id: transactionId,
         };
         const text =
-          `Undone the last transaction on ${requestPath}. The file was restored to its exact previous bytes and anchors.\n\n${diffText}`;
+          `Undone the last transaction on ${requestPath}. The file was restored to its exact previous bytes and anchors.\n\n${diff.text}`;
+
+        emitUndoAfter({
+          transactionId,
+          toolCallId,
+          success: true,
+        });
+
         return {
           content: [{ type: "text", text }],
-          details: { diff: diffText, metrics },
+          details: {
+            diff: diff.text,
+            metrics,
+            hashline: hashlineDetails({
+              outcome: "success",
+              code: "OK",
+              transactionId,
+              fileSha256: afterChecksum,
+              servedRows: diff.servedRows,
+            }),
+          },
         };
       });
     },

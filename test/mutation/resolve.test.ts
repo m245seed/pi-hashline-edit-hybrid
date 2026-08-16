@@ -59,7 +59,7 @@ describe("anchor resolution (spec §10)", () => {
 
   it("reversed range message never swaps anchors (spec §16)", () => {
     const message = reversedRangeMessage("f.ts", "ZZ99", "AA11");
-    expect(message).toContain("[E_BAD_RANGE]");
+    expect(message).toContain("[E_RANGE_REVERSED]");
     expect(message).toContain("Range start occurs after range end");
     expect(message).toContain("Nothing was modified.");
     expect(message).toContain("were not swapped");

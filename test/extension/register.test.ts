@@ -39,12 +39,12 @@ function makePi(): FakePi {
 }
 
 describe("extension registration", () => {
-  it("registers the five hybrid tools and lifecycle hooks", () => {
+  it("registers the six hybrid tools and lifecycle hooks", () => {
     withStateDir();
     const pi = makePi();
     factory(pi as never);
 
-    expect([...pi.tools.keys()].sort()).toEqual(["edit", "grep", "insert", "read", "undo"]);
+    expect([...pi.tools.keys()].sort()).toEqual(["edit", "grep", "insert", "read", "undo", "write"]);
     // Every tool carries the pieces pi needs: name, description, parameters, execute.
     for (const [name, tool] of pi.tools) {
       expect(tool.name).toBe(name);
@@ -58,6 +58,15 @@ describe("extension registration", () => {
     expect(pi.tools.get("edit")!.description).toContain("one transaction");
     expect(pi.tools.get("insert")!.description).toContain("anchor");
     expect(pi.tools.get("undo")!.description).toMatch(/without overwriting anything/);
+    // PH-PROTO-002: every tool declares the protocol id and anchor width.
+    for (const [, tool] of pi.tools) {
+      expect(tool.description).toContain("Protocol-ID: pi-hashline/1");
+      expect(tool.description).toContain("anchor width 4");
+    }
+    // PH-PROTO-001: every tool schema carries a stable protocol identifier.
+    for (const [, tool] of pi.tools) {
+      expect((tool.parameters as { $id?: string }).$id).toMatch(/^pi-hashline\/[a-z]+@1$/);
+    }
 
     expect(pi.handlers.has("session_start")).toBe(true);
     expect(pi.handlers.has("session_shutdown")).toBe(true);

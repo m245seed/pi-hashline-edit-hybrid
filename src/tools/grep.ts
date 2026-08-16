@@ -23,10 +23,12 @@ import { resolveTarget } from "../filesystem/resolve-target";
 import { loadAnchoredFile } from "../mutation/transaction";
 import { renderLinesUnserved } from "../render/hashline";
 import { serveLines } from "../served/ledger";
+import { hashlineDetails } from "../render/result-details";
 
 export interface GrepToolDetails {
   matches: number;
   files: number;
+  hashline: ReturnType<typeof hashlineDetails>;
 }
 
 const grepSchema = Type.Object(
@@ -43,10 +45,13 @@ const grepSchema = Type.Object(
     context: Type.Optional(Type.Integer({ minimum: 0 })),
     limit: Type.Optional(Type.Integer({ minimum: 1 })),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    $id: "pi-hashline/grep@1",
+  },
 );
 
-const G_DESC = `Search files with ripgrep and return matching lines with stable 4-character anchors (same engine as read), so results can drive edit/insert directly. Match lines and context lines are fully shown and become authorized for destructive edits.`;
+const G_DESC = `Protocol-ID: pi-hashline/1 (anchor width 4). Search files with ripgrep and return matching lines with stable 4-character anchors (same engine as read), so results can drive edit/insert directly. Match lines and context lines are fully shown and become authorized for destructive edits.`;
 
 const G_SNIPPET =
   "grep: anchored search; match and context lines carry edit-ready anchors, enabling grep → edit without a separate read.";
@@ -80,6 +85,7 @@ export function buildGrepToolDef(): ToolDefinition<any, GrepToolDetails> {
     description: G_DESC,
     promptSnippet: G_SNIPPET,
     parameters: grepSchema,
+    executionMode: "parallel",
 
     async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
       const params = rawParams as Record<string, unknown>;
@@ -245,7 +251,15 @@ export function buildGrepToolDef(): ToolDefinition<any, GrepToolDetails> {
       if (!output && skippedFiles === 0) {
         return {
           content: [{ type: "text", text: "No matches found" }],
-          details: { matches: totalMatches, files: fileCount },
+          details: {
+            matches: totalMatches,
+            files: fileCount,
+            hashline: hashlineDetails({
+              outcome: "no_match",
+              code: "NO_MATCH",
+              servedRows: 0,
+            }),
+          },
         };
       }
       if (truncated) {
@@ -267,9 +281,19 @@ export function buildGrepToolDef(): ToolDefinition<any, GrepToolDetails> {
       if (notices.length > 0) {
         output += `${output ? "\n\n" : ""}[${notices.join(". ")}]`;
       }
+      let servedRowCount = 0;
+      for (const entries of pendingServed.values()) servedRowCount += entries.length;
       return {
         content: [{ type: "text", text: output }],
-        details: { matches: totalMatches, files: fileCount },
+        details: {
+          matches: totalMatches,
+          files: fileCount,
+          hashline: hashlineDetails({
+            outcome: totalMatches > 0 ? "success" : "no_match",
+            code: totalMatches > 0 ? "OK" : "NO_MATCH",
+            servedRows: servedRowCount,
+          }),
+        },
       };
     },
   };

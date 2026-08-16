@@ -1,5 +1,5 @@
 /**
- * `read` tool (spec §12, §25, §27).
+ * `read` tool (spec §12, §25, §27, PH-PROTO-001..003, PH-OUTPUT-001..006).
  *
  * Returns complete lines with `anchor│text` rows. Read guarantees: resolve
  * symlink targets consistently, validate file type, reject unsupported
@@ -13,16 +13,19 @@ import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-age
 import { Type } from "typebox";
 import { toCwd } from "../paths";
 import { abortIf } from "../utils";
-import { DEFAULT_READ_LIMIT } from "../constants";
+import { DEFAULT_READ_LIMIT, READ_MAX_OUTPUT_BYTES } from "../constants";
 import { resolveTarget } from "../filesystem/resolve-target";
 import { loadAnchoredFile } from "../mutation/transaction";
-import { renderLines } from "../render/hashline";
+import { renderLinesBounded } from "../render/hashline";
+import { serveLines } from "../served/ledger";
+import { hashlineDetails } from "../render/result-details";
 
 export interface ReadToolDetails {
   revision: string;
   totalLines: number;
   shownLines: number;
   nextOffset?: number;
+  hashline: ReturnType<typeof hashlineDetails>;
 }
 
 const readSchema = Type.Object(
@@ -35,10 +38,13 @@ const readSchema = Type.Object(
       Type.Integer({ minimum: 1, description: "Maximum number of lines to return" }),
     ),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    $id: "pi-hashline/read@1",
+  },
 );
 
-const R_DESC = `Read a text file with stable 4-character hash anchors. Every returned row is \`anchor│content\`; the anchors are edit-ready — use them with edit, insert, and grep without re-reading. Output is paged: without \`limit\`, at most ${DEFAULT_READ_LIMIT} lines are returned (use \`offset\` to continue). Lines too large to display are omitted with a note and are not editable until inspected.`;
+const R_DESC = `Protocol-ID: pi-hashline/1 (anchor width 4). Read a text file with stable 4-character hash anchors. Every returned row is \`anchor│content\`; the anchors are edit-ready — use them with edit, insert, and grep without re-reading. Output is paged: without \`limit\`, at most ${DEFAULT_READ_LIMIT} lines are returned (use \`offset\` to continue). Lines too large to display are omitted with a note and are not editable until inspected.`;
 
 const R_SNIPPET =
   "read: return file lines with stable `ANCHOR│content` rows; anchors are edit-ready and become authorized for destructive edits.";
@@ -64,6 +70,7 @@ export function buildReadToolDef(): ToolDefinition<any, ReadToolDetails> {
     promptSnippet: R_SNIPPET,
     promptGuidelines: R_GUIDELINES,
     parameters: readSchema,
+    executionMode: "parallel",
 
     async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
       const params = rawParams as Record<string, unknown>;
@@ -88,18 +95,34 @@ export function buildReadToolDef(): ToolDefinition<any, ReadToolDetails> {
               text: `Offset ${offset} is beyond end of file (${total} lines total). Use offset=1 to read from the start.`,
             },
           ],
-          details: { revision: file.checksum, totalLines: total, shownLines: 0 },
+          details: {
+            revision: file.checksum,
+            totalLines: total,
+            shownLines: 0,
+            hashline: hashlineDetails({
+              outcome: "no_match",
+              code: "OFFSET_BEYOND_EOF",
+              fileSha256: file.checksum,
+              servedRows: 0,
+            }),
+          },
         };
       }
 
       const start = (offset ?? 1) - 1;
       const end = Math.min(start + (limit ?? DEFAULT_READ_LIMIT), total);
-      const { text, served } = renderLines(realPath, file.anchors, file.texts, start, end);
+      const bounded = renderLinesBounded(file.anchors, file.texts, start, end);
+      serveLines(realPath, bounded.served);
 
-      let output = text;
+      let output = bounded.text;
       let nextOffset: number | undefined;
       if (total === 1 && file.texts[0] === "" && file.raw.length === 0) {
-        output = `${text}\n[File is empty. Use edit or insert to add content.]`;
+        output = `${output}\n[File is empty. Use edit or insert to add content.]`;
+      } else if (bounded.truncated) {
+        // Byte budget dropped rows: continuation resumes at the first
+        // dropped line (PH-OUTPUT-006).
+        nextOffset = bounded.nextLine + 1;
+        output += `\n\n[Output truncated at the ${READ_MAX_OUTPUT_BYTES / 1024}KB budget; showing lines ${start + 1}-${bounded.nextLine} of ${total}. Use offset=${nextOffset} to continue.]`;
       } else if (end < total) {
         nextOffset = end + 1;
         output += `\n\n[Showing lines ${start + 1}-${end} of ${total}. Use offset=${nextOffset} to continue.]`;
@@ -112,8 +135,14 @@ export function buildReadToolDef(): ToolDefinition<any, ReadToolDetails> {
         details: {
           revision: file.checksum,
           totalLines: total,
-          shownLines: served.length,
+          shownLines: bounded.served.length,
           ...(nextOffset !== undefined ? { nextOffset } : {}),
+          hashline: hashlineDetails({
+            outcome: "success",
+            code: "OK",
+            fileSha256: file.checksum,
+            servedRows: bounded.served.length,
+          }),
         },
       };
     },

@@ -27,11 +27,11 @@ describe("served-state authorization (spec §10, §60)", () => {
     expect(check.ok).toBe(true);
   });
 
-  it("unseen endpoint fails with E_RANGE_UNSERVED", () => {
+  it("unseen endpoint fails with E_ANCHOR_NOT_SERVED", () => {
     serveLines(PATH, [{ anchor: "A001", exactText: "middle" }]);
     const check = checkRangeServed(PATH, anchors, texts, 0, 1);
     expect(check.ok).toBe(false);
-    expect(check.code).toBe("E_RANGE_UNSERVED");
+    expect(check.code).toBe("E_ANCHOR_NOT_SERVED");
     expect(check.unserved).toContain(0);
   });
 
@@ -42,7 +42,7 @@ describe("served-state authorization (spec §10, §60)", () => {
     ]);
     const check = checkRangeServed(PATH, anchors, texts, 0, 4);
     expect(check.ok).toBe(false);
-    expect(check.code).toBe("E_RANGE_UNSERVED");
+    expect(check.code).toBe("E_ANCHOR_NOT_SERVED");
     expect(check.unserved).toContain(1);
     expect(check.unserved).toContain(2);
     expect(check.unserved).toContain(3);
@@ -88,11 +88,12 @@ describe("served-state authorization (spec §10, §60)", () => {
   it("error feedback becomes served (spec §9)", () => {
     const message = formatRangeFailure("file.ts", PATH, anchors, texts, 0, 1, {
       ok: false,
-      code: "E_RANGE_UNSERVED",
+      code: "E_ANCHOR_NOT_SERVED",
       unserved: [0],
       stale: [],
+      epochStale: [],
     });
-    expect(message).toContain("[E_RANGE_UNSERVED]");
+    expect(message).toContain("[E_ANCHOR_NOT_SERVED]");
     expect(message).toContain("Nothing was modified.");
     // The returned fresh rows are served.
     expect(servedText(PATH, "A000")).toBe("start");
@@ -107,6 +108,7 @@ describe("served-state authorization (spec §10, §60)", () => {
       code: "E_RANGE_STALE",
       unserved: [],
       stale: [499],
+      epochStale: [],
     });
     expect(message).toContain("[E_RANGE_STALE]");
     expect(servedText(PATH, "B000")).toBe("line 0");
@@ -121,5 +123,25 @@ describe("served-state authorization (spec §10, §60)", () => {
     serveLines(PATH, [{ anchor: "A000", exactText: "start" }]);
     resetServed();
     expect(servedText(PATH, "A000")).toBeUndefined();
+  });
+
+  it("omits oversized lines from failure feedback and does not serve them (PH-OUTPUT-008)", () => {
+    const huge = "y".repeat(200 * 1024 + 1);
+    const fatTexts = ["start", huge, "end"];
+    const fatAnchors = ["A000", "A001", "A002"];
+    const message = formatRangeFailure("file.ts", PATH, fatAnchors, fatTexts, 0, 2, {
+      ok: false,
+      code: "E_ANCHOR_NOT_SERVED",
+      unserved: [1],
+      stale: [],
+      epochStale: [],
+    });
+    expect(message).toContain("Line 2 omitted");
+    expect(message).toContain("Not authorized for edits");
+    expect(message).not.toContain(huge);
+    // The oversized row never becomes servable; its neighbors do.
+    expect(servedText(PATH, "A001")).toBeUndefined();
+    expect(servedText(PATH, "A000")).toBe("start");
+    expect(servedText(PATH, "A002")).toBe("end");
   });
 });

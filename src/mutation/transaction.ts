@@ -63,7 +63,19 @@ export async function loadAnchoredFile(
   realPath: string,
   label: string,
 ): Promise<AnchoredFile> {
-  const kind = await checkFileKind(realPath, label);
+  let kind: Awaited<ReturnType<typeof checkFileKind>>;
+  try {
+    kind = await checkFileKind(realPath, label);
+  } catch (error: unknown) {
+    // A missing target must fail with the anchored protocol error, not a
+    // raw ENOENT from stat (the readFile branch below never runs for it).
+    if (errCode(error) === "ENOENT") {
+      throw new Error(
+        `[E_BAD_REF] ${label} does not exist. Use read() to inspect the file before editing.`,
+      );
+    }
+    throw error;
+  }
   assertFileKind(kind, label);
   let raw: Buffer;
   try {
@@ -158,6 +170,8 @@ export interface CommitInput {
   /** False for undo operations (undo never creates a new undo record). */
   keepUndo: boolean;
   warnings: string[];
+  /** True when committing a brand-new file (target must still be absent). */
+  expectAbsent?: boolean;
 }
 
 /**
@@ -187,6 +201,7 @@ export async function commitMutation(input: CommitInput): Promise<void> {
     expectedRevision,
     keepUndo,
     warnings,
+    expectAbsent,
   } = input;
 
   if (expectedRevision !== undefined && expectedRevision !== checksumBefore) {
@@ -249,7 +264,7 @@ export async function commitMutation(input: CommitInput): Promise<void> {
   try {
     // Phases 4–5.
     if (target.hardlink) {
-      await precommitVerify(realPath, realPath, rawBefore);
+      await precommitVerify(realPath, realPath, rawBefore, expectAbsent === true);
       abortCheck(signal);
       await writeInPlace(target.targetPath, content, target.mode);
       fileCommitted = true;
@@ -258,8 +273,12 @@ export async function commitMutation(input: CommitInput): Promise<void> {
       );
     } else {
       try {
-        tempPath = await prepareTempWrite(target.targetPath, content, target.mode);
-        await precommitVerify(realPath, realPath, rawBefore);
+        tempPath = await prepareTempWrite(
+          target.targetPath,
+          content,
+          target.mode ?? (expectAbsent ? 0o644 : undefined),
+        );
+        await precommitVerify(realPath, realPath, rawBefore, expectAbsent === true);
         abortCheck(signal);
         // Phase 6 — commit.
         await commitTempFile(tempPath, target.targetPath);
@@ -270,7 +289,7 @@ export async function commitMutation(input: CommitInput): Promise<void> {
         // else from the atomic-replacement phase is an unexpected safe-
         // replacement failure (spec §45) — never a silent non-atomic
         // fallback.
-        if (error instanceof Error && /E_(COMMIT_STALE|PATH_CHANGED|ABORTED)/.test(error.message)) {
+        if (error instanceof Error && /E_(FILE_CHANGED|PATH_CHANGED|ABORTED)/.test(error.message)) {
           throw error;
         }
         throw new Error(

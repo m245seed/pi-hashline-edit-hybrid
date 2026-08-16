@@ -121,7 +121,7 @@ describe("filesystem behaviors (spec §43–§46)", () => {
     expect(statSync(path).mode & 0o777).toBe(0o755);
   });
 
-  it("fails the precommit check when the file changes during preparation (E_COMMIT_STALE)", async () => {
+  it("fails the precommit check when the file changes during preparation (E_FILE_CHANGED)", async () => {
     const dir = makeProject();
     const path = writeFileAt(dir, "a.ts", "one\ntwo\n");
     // Read state as the tool would.
@@ -151,7 +151,7 @@ describe("filesystem behaviors (spec §43–§46)", () => {
         keepUndo: true,
         warnings: [],
       }),
-    ).rejects.toThrow(/E_COMMIT_STALE/);
+    ).rejects.toThrow(/E_FILE_CHANGED/);
     // The file keeps the external content; the journal was rolled back.
     expect(readFileAt(path)).toBe("one\ntwo\nthree\n");
     const store = await loadStore();

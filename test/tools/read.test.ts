@@ -198,4 +198,35 @@ describe("read tool (spec §12, §25)", () => {
     expect(result.isError).toBeFalsy();
     expect(readFileSync(join(dir, "a.ts"), "utf-8")).toBe("alpha\nBETA\n");
   });
+  it("truncates between complete rows at the byte budget with a correct continuation offset (PH-OUTPUT-003/006)", async () => {
+    const dir = makeProject();
+    // 3000 lines of ~300 bytes: the default 2000-line page exceeds the
+    // 512KB total budget, so the read must cut between complete rows.
+    const line = "x".repeat(300);
+    const content = Array.from({ length: 3000 }, (_, i) => `${i} ${line}`).join("\n") + "\n";
+    writeFileAt(dir, "big.ts", content);
+    const page1 = await runTool(readTool, { path: "big.ts" }, dir);
+    expect(page1.isError).toBeFalsy();
+    const nextOffset = (page1.details as { nextOffset?: number }).nextOffset;
+    expect(nextOffset).toBeDefined();
+    expect(textOf(page1)).toContain("Output truncated at the 512KB budget");
+    // The generator embeds 0-based i in each row text; row `i` is 1-based line i+1.
+    const rowRe = /^[A-Za-z0-9]{4}│(\d+) x+$/;
+    const shown = textOf(page1)
+      .split("\n")
+      .flatMap((l) => {
+        const m = l.match(rowRe);
+        return m ? [Number.parseInt(m[1]!, 10)] : [];
+      });
+    expect(shown.length).toBeGreaterThan(0);
+    for (let i = 1; i < shown.length; i++) {
+      expect(shown[i]!).toBe(shown[i - 1]! + 1);
+    }
+    expect(nextOffset!).toBe(shown[shown.length - 1]! + 2);
+    // Continuing from nextOffset neither repeats nor skips a line.
+    const page2 = await runTool(readTool, { path: "big.ts", offset: nextOffset }, dir);
+    const firstRow = textOf(page2).split("\n").find((l) => rowRe.test(l))!;
+    expect(Number.parseInt(firstRow.match(rowRe)![1]!, 10)).toBe(shown[shown.length - 1]! + 1);
+  });
 });
+

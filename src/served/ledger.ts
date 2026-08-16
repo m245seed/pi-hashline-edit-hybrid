@@ -9,9 +9,27 @@
  * The ledger is session-scoped by design (spec §8.1): anchors and undo
  * survive restarts, but permission to destructively edit previously viewed
  * lines does not — after a restart, `read`/`grep` is required again.
+ *
+ * Every served entry carries the numeric context epoch it was served in
+ * (PH-CONTEXT-001). Entries from older epochs do not authorize destructive
+ * edits (PH-CONTEXT-003).
  */
 
-export type ServedLedger = Map<string, Map<string, string>>;
+import { getContextEpoch } from "./epoch";
+
+export interface ServedEntry {
+  exactText: string;
+  epoch: number;
+  /**
+   * Last-known 0-based line index at serve time (§31.6 stale-anchor
+   * recovery metadata). Optional because diff-served rows do not track it.
+   */
+  lastKnownLineIndex?: number;
+  /** ISO timestamp when the row was served (§31.6). */
+  servedAt?: string;
+}
+
+export type ServedLedger = Map<string, Map<string, ServedEntry>>;
 
 const ledger: ServedLedger = new Map();
 
@@ -19,7 +37,7 @@ const ledger: ServedLedger = new Map();
  * Session-scoped "shown but now changed" markers (spec §71). When an
  * external change replaces a line that was previously served, the line's
  * fresh anchor is marked stale so the range check can report E_RANGE_STALE
- * ("the content the agent saw changed") instead of E_RANGE_UNSERVED.
+ * ("the content the agent saw changed") instead of E_ANCHOR_NOT_SERVED.
  */
 const staleAnchors: Map<string, Set<string>> = new Map();
 
@@ -27,29 +45,51 @@ export function getLedger(): ServedLedger {
   return ledger;
 }
 
-export function serveLine(path: string, anchor: string, exactText: string): void {
+export interface ServeEntryInput {
+  anchor: string;
+  exactText: string;
+  lineIndex?: number;
+}
+
+export function serveLine(path: string, anchor: string, exactText: string, lineIndex?: number): void {
+  const entry: ServedEntry = { exactText, epoch: getContextEpoch(), servedAt: new Date().toISOString() };
+  if (lineIndex !== undefined) entry.lastKnownLineIndex = lineIndex;
+  putEntry(path, anchor, entry);
+}
+
+/** Store a fully-formed served entry (used for epoch-preserving transfers). */
+function putEntry(path: string, anchor: string, entry: ServedEntry): void {
   let file = ledger.get(path);
   if (!file) {
     file = new Map();
     ledger.set(path, file);
   }
-  file.set(anchor, exactText);
+  file.set(anchor, entry);
 }
 
-export function serveLines(path: string, entries: Array<{ anchor: string; exactText: string }>): void {
+export function serveLines(path: string, entries: Array<ServeEntryInput>): void {
   if (entries.length === 0) return;
   let file = ledger.get(path);
   if (!file) {
     file = new Map();
     ledger.set(path, file);
   }
+  const epoch = getContextEpoch();
+  const servedAt = new Date().toISOString();
   for (const entry of entries) {
-    file.set(entry.anchor, entry.exactText);
+    const stored: ServedEntry = { exactText: entry.exactText, epoch, servedAt };
+    if (entry.lineIndex !== undefined) stored.lastKnownLineIndex = entry.lineIndex;
+    file.set(entry.anchor, stored);
   }
 }
 
 /** Exact text previously served for (path, anchor), or undefined. */
 export function servedText(path: string, anchor: string): string | undefined {
+  return ledger.get(path)?.get(anchor)?.exactText;
+}
+
+/** Full served entry (text + epoch) for (path, anchor), or undefined. */
+export function servedEntry(path: string, anchor: string): ServedEntry | undefined {
   return ledger.get(path)?.get(anchor);
 }
 
@@ -81,8 +121,8 @@ export function pruneServedPath(
 ): void {
   const file = ledger.get(path);
   if (!file) return;
-  for (const [anchor, text] of file) {
-    if (current.get(anchor) !== text) {
+  for (const [anchor, entry] of file) {
+    if (current.get(anchor) !== entry.exactText) {
       file.delete(anchor);
     }
   }
@@ -106,7 +146,7 @@ export function resetServed(): void {
  * - Lines preserved by the alignment keep (or transfer) their authorization.
  * - A line that was served before and now changed keeps a stale marker on
  *   its fresh anchor, so authorization failures report E_RANGE_STALE
- *   ("shown but now changed") rather than E_RANGE_UNSERVED.
+ *   ("shown but now changed") rather than E_ANCHOR_NOT_SERVED.
  * - Served entries for removed lines stay dormant; their anchors are
  *   retired and can only become live again through undo (which restores
  *   the exact bytes, so the entry remains valid).
@@ -119,9 +159,12 @@ export function reconcileServed(
   newTexts: readonly string[],
 ): void {
   for (const [newIdx, oldIdx] of mapping) {
-    const oldServed = servedText(path, oldAnchors[oldIdx]!);
-    if (oldServed !== undefined && oldServed === newTexts[newIdx]!) {
-      serveLine(path, newAnchors[newIdx]!, newTexts[newIdx]!);
+    const oldEntry = servedEntry(path, oldAnchors[oldIdx]!);
+    if (oldEntry !== undefined && oldEntry.exactText === newTexts[newIdx]!) {
+      // Transfer the authorization as-is, preserving the epoch it was
+      // actually served in (PH-CONTEXT-003): an external change must never
+      // refresh an older epoch's authorization.
+      putEntry(path, newAnchors[newIdx]!, { ...oldEntry, lastKnownLineIndex: newIdx });
     }
   }
   const servedOldIndexes = new Set<number>();

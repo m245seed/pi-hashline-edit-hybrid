@@ -174,4 +174,60 @@ describe("edit safety preflights", () => {
     const file = await loadAnchoredFile(realPath, "a.ts");
     expect(servedText(realPath, file.anchors[0]!)).toBeUndefined();
   });
+
+  it("bounds boundary-duplicate evidence lines (PH-EDIT-004)", async () => {
+    const dir = makeProject();
+    writeFileAt(dir, "a.ts", "a\nb\nc\nd\ne\nf\n");
+    const read = await runTool(readTool, { path: "a.ts" }, dir);
+    const anchors = anchorsFromRead(textOf(read));
+    // Replacement ends with 4 lines identical to the block after the range.
+    await expect(
+      runTool(
+        editTool,
+        {
+          path: "a.ts",
+          edits: [
+            {
+              range: [anchors.get("b")!, anchors.get("b")!],
+              lines: ["x", "c", "d", "e", "f"],
+            },
+          ],
+        },
+        dir,
+      ),
+    ).rejects.toThrow(/E_BOUNDARY_DUP/);
+    expect(readFileAt(join(dir, "a.ts"))).toBe("a\nb\nc\nd\ne\nf\n");
+  });
+
+  it("rejects edits to a nonexistent file with E_BAD_REF", async () => {
+    const dir = makeProject();
+    await expect(
+      runTool(
+        editTool,
+        { path: "missing.ts", edits: [{ range: ["Ab12", "Ab12"], lines: ["x"] }] },
+        dir,
+      ),
+    ).rejects.toThrow(/E_BAD_REF/);
+  });
+
+  it("reports the unused final_newline option on a no-op transaction", async () => {
+    const dir = makeProject();
+    writeFileAt(dir, "a.ts", "one\ntwo\nthree\n");
+    const read = await runTool(readTool, { path: "a.ts" }, dir);
+    const one = anchorsFromRead(textOf(read)).get("one")!;
+    const result = await runTool(
+      editTool,
+      {
+        path: "a.ts",
+        edits: [{ range: [one, one], lines: ["one"] }],
+        final_newline: "present",
+      },
+      dir,
+    );
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toContain("No changes made.");
+    const metrics = result.details?.metrics as { warnings: number };
+    expect(metrics.warnings).toBe(1);
+    expect(readFileAt(join(dir, "a.ts"))).toBe("one\ntwo\nthree\n");
+  });
 });

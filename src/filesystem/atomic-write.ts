@@ -136,6 +136,7 @@ export async function precommitVerify(
   path: string,
   originalTarget: string,
   rawBefore: Buffer,
+  expectAbsent = false,
 ): Promise<void> {
   const currentTarget = await resolveTarget(path);
   if (currentTarget !== originalTarget) {
@@ -143,7 +144,22 @@ export async function precommitVerify(
       `[E_PATH_CHANGED] The target of ${path} changed during transaction preparation (it now resolves to ${currentTarget}). Nothing was modified.`,
     );
   }
-  const handle = await open(currentTarget, "r");
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(currentTarget, "r");
+  } catch (error: unknown) {
+    if (expectAbsent && errCode(error) === "ENOENT") {
+      // New-file write: the target must still be absent at commit time.
+      return;
+    }
+    throw error;
+  }
+  if (expectAbsent) {
+    await handle.close();
+    throw new Error(
+      `[E_FILE_CHANGED] The file ${path} appeared on disk during transaction preparation. Nothing was modified.`,
+    );
+  }
   let current: Buffer;
   try {
     const info = await handle.stat();
@@ -156,7 +172,7 @@ export async function precommitVerify(
   }
   if (!current.equals(rawBefore)) {
     throw new Error(
-      `[E_COMMIT_STALE] The file changed on disk during transaction preparation. Nothing was modified.`,
+      `[E_FILE_CHANGED] The file changed on disk during transaction preparation. Nothing was modified.`,
     );
   }
 }
