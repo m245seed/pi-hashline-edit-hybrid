@@ -40,30 +40,29 @@ jobs:
             test "$actual" = "$expected"
           }
 
-          write_blob README.md d12f706bfbd531d213c1a69f16cc9dae76ff64ad
-          write_blob src/constants.ts e27022a51f8f950df6ceef8bf1d440f530a8c139
-          write_blob src/integration/write-hook.ts cdad3707531bebe502680428b7e3014183d4bdf4
-          write_blob src/mutation/apply.ts 0f38b08deff357ca1e225be90ba2d392658d1211
-          write_blob src/mutation/resolve.ts 3eb69ea7b8b15935c37393243a791208d01e6eea
-          write_blob src/mutation/validate.ts 0baf5144fcb3e98742dde47b1d9b534759270ea9
-          write_blob src/render/diff.ts f24751ff5f0f569fe5264178769bed59e3f7e3f4
-          write_blob src/render/errors.ts 2739da146b7faab5ed2c1fdb22be5309fd47a4fb
-          write_blob src/render/hashline.ts afe7741dd410b7b5c8012668067e0e02bf89b253
-          write_blob src/render/warnings.ts a630fa7d9d1ee0395d14c53a31f7642eaa0b1a95
-          write_blob src/served/authorize.ts f7e3e234eae3e3f4b541be50eb5e92346ba51f77
-          write_blob src/served/ledger.ts 5d7727d77a0aee47b1e24e9db67604a74064ffcf
-          write_blob src/tools/edit.ts 266dcc117743594555056cf28acd6cdf3f03327f
-          write_blob src/tools/grep.ts 6595a09fa9dd323155e7fa67e6bdd86bded1736d
-          write_blob src/tools/insert.ts 5401c3cc225c5fdce10b406323da30adb7161920
-          write_blob src/tools/read.ts c7e1663b98f7518bb73c5edfa022add46e42a649
-          write_blob test/integration/write-hook.test.ts d623690c4fb46f16161e12ebff49e5dafe7060eb
-          write_blob test/mutation/resolve.test.ts ebf74e7ded946abf9e1966ea426f51f0581ba63c
-          write_blob test/mutation/validate.test.ts 2aa2efc7a6ca1b66e6d49e48b52ecb44e0d31c48
-          write_blob test/property/fuzz.test.ts d02bed217baefdfd06c3e49cdae45937f53a7a20
-          write_blob test/render/warnings.test.ts d3ea59be6f0ac7f6e1ec317bdfb3e22d65c682bf
-          write_blob test/served/authorize.test.ts e5218e2a7ddd3bd47f91b70167c04f7a1c1436d3
-          write_blob test/served/ledger.test.ts 22fbb7416559b50cd56609a73a1ff3af460ebfb0
-          write_blob test/tools/read.test.ts c236944bc08d6a6097d149e04fd612b59b22ffc2
+          write_blob README.md 76d0631b40b34131ee6cc4c09af2cc2daa549ded
+          write_blob src/constants.ts d79d7d8ea7835d3b61eeab9b8eda479a69a76336
+          write_blob src/integration/write-hook.ts d1de55f4d359c34514a2f4720be4c61e7285bf78
+          write_blob src/mutation/apply.ts c3e32f5834e16283939cc6337d1e1d1321de158d
+          write_blob src/mutation/resolve.ts 38318637f0cecdee48d9a9a6db4562dc11cffdb6
+          write_blob src/mutation/validate.ts c18ba15ee9f0289dce10aafc09cf1f0130c9d811
+          write_blob src/render/diff.ts e1f0a596ff4f964adb3e48ed6a3845d3ae44500b
+          write_blob src/render/errors.ts 79a67bb6a35345938677ddd58aa27ea7172bbd24
+          write_blob src/render/hashline.ts 804c0cd9276d5b0a02efd4e2db2c05938f889130
+          write_blob src/render/warnings.ts 0264dc995c0a6053264712abf98448a53dfa9c81
+          write_blob src/served/authorize.ts 48bc2acdac44799ffc75d6d83878fdfd9d080b6a
+          write_blob src/served/ledger.ts dfa5093473cdfce7858485b45efdc6721fec79b7
+          write_blob src/tools/edit.ts bca11b7a58c4a1db2b64add03bc6330928f37ded
+          write_blob src/tools/grep.ts 1616687d5b8be2db37421b7ce35e6bda09faefa0
+          write_blob src/tools/insert.ts 07255c37d1bb45fb63373331ab2b2629e86de25a
+          write_blob src/tools/read.ts 1d87bfa918f88bd0b99f2b61e5da251403dfcddc
+          write_blob test/integration/write-hook.test.ts a3ac52439bd4a6a55a81b3f557df0afb23824294
+          write_blob test/mutation/resolve.test.ts 5becfdac5ca320a3e81f93b65006a619679bc324
+          write_blob test/mutation/validate.test.ts a89e8952f586a7737b5a82ee3747e9157532891d
+          write_blob test/property/fuzz.test.ts f8ccd030598fb493bd6deadc87ee275f4deee329
+          write_blob test/served/authorize.test.ts a6e8fd3358d983749aa7a3a73b1455f363d07d93
+          write_blob test/served/ledger.test.ts e8350609ed85ddf1f7badb779a8d13d474520289
+          write_blob test/tools/read.test.ts a223a0c15faa1eb3fe9a95e6a01b4b655da958d8
 
           rm -rf .hashline-bootstrap
           rm -f .github/workflows/apply-hashline-hardening.yml
