@@ -63,9 +63,15 @@ describe("extension registration", () => {
       expect(tool.description).toContain("Protocol-ID: pi-hashline/1");
       expect(tool.description).toContain("anchor width 4");
     }
-    // PH-PROTO-001: every tool schema carries a stable protocol identifier.
+    // PH-PROTO-001: every tool carries a stable protocol identifier. The
+    // per-schema `$id` is preferred, but some upstreams (xAI/Grok, DeepSeek
+    // routes via OpenAI-compatible gateways) reject `$id` in tool schemas, so
+    // the description-level `Protocol-ID` (verified by PH-PROTO-002) is the
+    // fallback identifier.
     for (const [, tool] of pi.tools) {
-      expect((tool.parameters as { $id?: string }).$id).toMatch(/^pi-hashline\/[a-z]+@1$/);
+      const schemaId = (tool.parameters as { $id?: string }).$id;
+      const descriptionId = /Protocol-ID:\s*([A-Za-z0-9_\-./@]+)/i.exec(tool.description ?? "")?.[1];
+      expect(schemaId ?? descriptionId).toMatch(/^pi-hashline\/(?:[a-z]+@1|1)$/);
     }
 
     expect(pi.handlers.has("session_start")).toBe(true);

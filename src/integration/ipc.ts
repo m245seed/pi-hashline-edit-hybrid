@@ -22,11 +22,13 @@ import { ALPH, HASH_SEP, ANCHOR_LEN } from "../anchors/alphabet";
 import { getContextEpoch, setContextEpoch } from "../served/epoch";
 import { addFreeze, removeFreeze } from "./freeze";
 import { READ_MAX_OUTPUT_BYTES, MAX_LINES } from "../constants";
-
-const IPC_PROTOCOL_ID = "pi-sentinel-hashline/1";
-const HASHLINE_PROTOCOL_ID = "pi-hashline/1";
-const PACKAGE_NAME = "pi-hashline-edit-hybrid";
-const PACKAGE_VERSION = "0.1.0";
+import {
+  HASHLINE_PROTOCOL_ID,
+  HASHLINE_RESULT_PROTOCOL,
+  IPC_PROTOCOL_ID,
+  PACKAGE_NAME,
+  PACKAGE_VERSION,
+} from "./protocol";
 
 const EVENTS = {
   sentinelDiscover: "pi-sentinel.ipc.v1.discover",
@@ -162,11 +164,18 @@ function canonicalSerialize(value: unknown): string {
   return "null";
 }
 
+const digestCache = new Map<string, string>();
+
 export function digestSchema(schema: unknown): string {
   const canonical = canonicalSerialize(prepare(schema));
+  const cached = digestCache.get(canonical);
+  if (cached !== undefined) return cached;
   const hex = createHash("sha256").update(canonical, "utf-8").digest("hex");
-  return `sha256:${hex}`;
+  const digest = `sha256:${hex}`;
+  digestCache.set(canonical, digest);
+  return digest;
 }
+
 
 // ── Runtime state ──────────────────────────────────────────────────────
 
@@ -302,7 +311,7 @@ export function registerIpc(pi: ExtensionAPI, tools: IpcToolDef[]): void {
         name: tool.name,
         role: TOOL_ROLES[tool.name]!,
         schemaDigest: digestSchema(tool.parameters),
-        resultProtocol: "pi-hashline-result/1",
+        resultProtocol: HASHLINE_RESULT_PROTOCOL,
         exactContent: true,
       })),
     features: {

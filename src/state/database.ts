@@ -1,11 +1,19 @@
 /**
  * Persistent store (spec §48, §49).
  *
- * SQLite under the Pi/XDG configuration area, WAL mode with synchronous=FULL
- * (preferable for a safety-focused hybrid), busy timeout with bounded busy
- * retries, schema versioning, a quick integrity check, and corruption
- * quarantine: a corrupted store is renamed to a timestamped quarantine file,
- * a clean store is created, and anchors are reconstructed safely from disk.
+ * SQLite under the Pi/XDG configuration area, WAL mode with synchronous=NORMAL,
+ * busy timeout with bounded busy retries, schema versioning, a quick
+ * integrity check, and corruption quarantine: a corrupted store is renamed
+ * to a timestamped quarantine file, a clean store is created, and anchors
+ * are reconstructed safely from disk.
+ *
+ * Durability tradeoff (synchronous=NORMAL): committed rows survive
+ * application crashes, but a power loss or OS crash can lose the most
+ * recent WAL commits — including a pending_transactions row whose file
+ * replacement already reached disk. Recovery then sees no journal entry,
+ * so undo for that transaction is unavailable; the file itself is never
+ * corrupted. This trades a small crash window for materially lower fsync
+ * latency.
  */
 
 import { existsSync } from "fs";
@@ -44,6 +52,9 @@ let cachedDb: { path: string; db: DatabaseSync } | null = null;
 let opening: { path: string; promise: Promise<Store> } | null = null;
 let exitHandlerRegistered = false;
 
+// Reused SharedArrayBuffer for sync sleep to avoid per-retry allocation.
+const sleepSab = new Int32Array(new SharedArrayBuffer(4));
+
 export function isCorruptionError(error: unknown): boolean {
   if (error && typeof error === "object") {
     const errcode = (error as { errcode?: unknown }).errcode;
@@ -67,9 +78,14 @@ function isBusyError(error: unknown): boolean {
   return error instanceof Error && /busy|locked/i.test(error.message);
 }
 
+function sleep(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+}
+
 function sleepSync(ms: number): void {
-  const sab = new Int32Array(new SharedArrayBuffer(4));
-  Atomics.wait(sab, 0, 0, ms);
+  Atomics.wait(sleepSab, 0, 0, ms);
 }
 
 export function withBusyRetry<T>(fn: () => T): T {
@@ -86,18 +102,33 @@ export function withBusyRetry<T>(fn: () => T): T {
   throw lastError;
 }
 
+export async function withBusyRetryAsync<T>(fn: () => T | Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= DB_BUSY_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (!isBusyError(error) || attempt === DB_BUSY_RETRIES) throw error;
+      await sleep(DB_BUSY_RETRY_DELAY_MS);
+    }
+  }
+  throw lastError;
+}
+
 function openDb(storePath: string): { db: DatabaseSync } {
   const db = new DatabaseSync(storePath, { timeout: DB_BUSY_TIMEOUT });
   try {
     db.exec("PRAGMA journal_mode = WAL");
-    db.exec("PRAGMA synchronous = FULL");
+    db.exec("PRAGMA synchronous = NORMAL");
     db.exec(FILES_TABLE);
     db.exec(UNDO_TABLE);
     db.exec(PENDING_TABLE);
     db.exec(META_TABLE);
-    const versionRow = db
-      .prepare(`SELECT value FROM meta WHERE key = ?`)
-      .get(SCHEMA_KEY) as { value?: string } | undefined;
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_pending_created_at ON pending_transactions(created_at)`);
+    const versionRow = db.prepare(`SELECT value FROM meta WHERE key = ?`).get(
+      SCHEMA_KEY,
+    ) as { value?: string } | undefined;
     if (versionRow && versionRow.value !== String(SCHEMA_VERSION)) {
       throw new SchemaVersionError(
         `[E_STATE_CORRUPT] Hashline state schema version ${versionRow.value} is unsupported (expected ${SCHEMA_VERSION}). The state store was not modified; upgrade or downgrade the extension, or remove the store to start fresh.`,
@@ -155,18 +186,18 @@ async function openStore(storePath: string): Promise<Store> {
   await mkdir(stateDir(), { recursive: true });
   let opened: { db: DatabaseSync };
   try {
-    opened = withBusyRetry(() => openDb(storePath));
+    opened = await withBusyRetryAsync(() => openDb(storePath));
   } catch (error) {
     if (error instanceof SchemaVersionError) throw error;
     if (!isCorruptionError(error)) throw error;
     console.error("Hashline state failed to open, rebuilding:", error);
     await quarantineStore(storePath);
-    opened = withBusyRetry(() => openDb(storePath));
+    opened = await withBusyRetryAsync(() => openDb(storePath));
   }
   if (!isHealthy(opened.db)) {
     shutdownStore();
     await quarantineStore(storePath);
-    opened = withBusyRetry(() => openDb(storePath));
+    opened = await withBusyRetryAsync(() => openDb(storePath));
   }
   cachedDb = { path: storePath, db: opened.db };
   if (!exitHandlerRegistered) {
@@ -181,7 +212,6 @@ async function openStore(storePath: string): Promise<Store> {
   }
   return { db: opened.db, engine: "node:sqlite" };
 }
-
 export function loadStore(): Promise<Store> {
   const storePath = statePath();
   if (cachedDb && cachedDb.path === storePath && cachedDb.db.isOpen) {
@@ -190,7 +220,19 @@ export function loadStore(): Promise<Store> {
   if (opening && opening.path === storePath) {
     return opening.promise;
   }
-  const promise = openStore(storePath).finally(() => {
+  // Serialize openings: if another path is mid-open, wait for it to finish
+  // before shutting down and opening the requested path. This avoids closing
+  // a DB that may still be handling in-flight queries.
+  const prior = opening?.promise;
+  const doOpen = async (): Promise<Store> => {
+    if (prior) {
+      try {
+        await prior;
+      } catch {}
+    }
+    return openStore(storePath);
+  };
+  const promise = doOpen().finally(() => {
     if (opening?.path === storePath) opening = null;
   });
   opening = { path: storePath, promise };

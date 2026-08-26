@@ -26,13 +26,10 @@ import { emitContextEpoch } from "./ipc";
 
 export function registerSession(pi: ExtensionAPI, autoReadState: { value: boolean }): void {
   pi.on("session_start", async (_event, ctx) => {
-    try {
-      await initHasher();
-    } catch (error) {
-      // Tools that need anchor allocation fail closed with a clear error;
-      // the store and served-state reset must still run.
-      console.error("Hashline xxhash-wasm initialization failed:", error);
-    }
+    // xxhash-wasm initialization falls back to the pure-JS hasher
+    // internally (see hasher.ts) and never rejects; the store and
+    // served-state reset below must run regardless of its outcome.
+    await initHasher();
     try {
       await loadStore();
       const summary = await runRecovery();

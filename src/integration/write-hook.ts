@@ -19,16 +19,19 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { toCwd } from "../paths";
 import { resolveTarget } from "../filesystem/resolve-target";
+import { withFileMutationQueue } from "../filesystem/concurrency";
 import { loadAnchoredFile } from "../mutation/transaction";
 import { clearUndoRecord } from "../state/undo";
-import { pruneServedPath, serveLines } from "../served/ledger";
+import { pruneServedPath, serveLines, servedWindowNotice } from "../served/ledger";
 import { renderLinesBounded } from "../render/hashline";
 import { AUTO_READ_MAX_LINES, AUTO_READ_MAX_BYTES } from "../constants";
+import { HASHLINE_RESULT_PROTOCOL } from "./protocol";
 
 function isOwnHashlineWrite(event: { details?: unknown }): boolean {
   const details = event.details as { hashline?: { protocol?: unknown } } | undefined;
-  return details?.hashline?.protocol === "pi-hashline-result/1";
+  return details?.hashline?.protocol === HASHLINE_RESULT_PROTOCOL;
 }
+
 
 export function registerWriteHook(
   pi: ExtensionAPI,
@@ -44,37 +47,44 @@ export function registerWriteHook(
 
     try {
       const realPath = await resolveTarget(toCwd(writtenPath, ctx.cwd));
-      // Authoritative whole-file mutation: clear undo and re-anchor.
-      await clearUndoRecord(realPath);
-      const file = await loadAnchoredFile(realPath, writtenPath);
-      const current = new Map<string, string>();
-      for (let i = 0; i < file.anchors.length; i++) {
-        current.set(file.anchors[i]!, file.texts[i]!);
-      }
-      pruneServedPath(realPath, current);
+      // Serialize with per-file mutation queue to avoid racing anchor
+      // reconciliation against concurrent edit/insert transactions.
+      return await withFileMutationQueue(realPath, async () => {
+        // Authoritative whole-file mutation: clear undo and re-anchor.
+        await clearUndoRecord(realPath);
+        const file = await loadAnchoredFile(realPath, writtenPath);
+        const current = new Map<string, string>();
+        for (let i = 0; i < file.anchors.length; i++) {
+          current.set(file.anchors[i]!, file.texts[i]!);
+        }
+        pruneServedPath(realPath, current);
 
-      if (!getAutoRead()) return;
-      const end = Math.min(file.texts.length, AUTO_READ_MAX_LINES);
-      const preview = renderLinesBounded(
-        file.anchors,
-        file.texts,
-        0,
-        end,
-        AUTO_READ_MAX_BYTES,
-      );
-      serveLines(realPath, preview.served);
-      let previewText = preview.text;
-      if (preview.truncated) {
-        previewText += `\n\n[Preview truncated at the ${AUTO_READ_MAX_BYTES / 1024}KB budget. Use read to see more.]`;
-      } else if (end < file.texts.length) {
-        previewText += `\n\n[Showing the first ${end} lines of ${file.texts.length}.]`;
-      }
-      return {
-        content: [
-          ...(event.content ?? []),
-          { type: "text", text: `\n\n--- Auto-read (hashline anchors) ---\n${previewText}` },
-        ],
-      };
+        if (!getAutoRead()) return;
+        const end = Math.min(file.texts.length, AUTO_READ_MAX_LINES);
+        const preview = renderLinesBounded(
+          file.anchors,
+          file.texts,
+          0,
+          end,
+          AUTO_READ_MAX_BYTES,
+        );
+        const evictedRows = serveLines(realPath, preview.served);
+        let previewText = preview.text;
+        if (preview.truncated) {
+          previewText += `\n\n[Preview truncated at the ${AUTO_READ_MAX_BYTES / 1024}KB budget. Use read to see more.]`;
+        } else if (end < file.texts.length) {
+          previewText += `\n\n[Showing the first ${end} lines of ${file.texts.length}.]`;
+        }
+        if (evictedRows > 0) {
+          previewText += servedWindowNotice(evictedRows);
+        }
+        return {
+          content: [
+            ...(event.content ?? []),
+            { type: "text", text: `\n\n--- Auto-read (hashline anchors) ---\n${previewText}` },
+          ],
+        };
+      });
     } catch (error) {
       console.error("Auto-read after write failed:", error);
       const message = error instanceof Error ? error.message : String(error);

@@ -15,6 +15,8 @@
 export interface CandidateRow {
   /** The exact rendered row text for output. */
   rendered: string;
+  /** Precomputed byte length of rendered (without trailing delimiter). */
+  renderedBytes?: number;
   /**
    * Present only when the row is a complete exact file row that may enter
    * the served ledger once retained. Omission notices and structural rows
@@ -60,7 +62,8 @@ export function applyOutputBudget(
   let dropped = 0;
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i]!;
-    const bytes = Buffer.byteLength(candidate.rendered, "utf-8") + 1;
+    const bytes =
+      (candidate.renderedBytes ?? Buffer.byteLength(candidate.rendered, "utf-8")) + 1;
     if (bytes > budget) {
       dropped = candidates.length - i;
       break;

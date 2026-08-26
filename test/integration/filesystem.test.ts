@@ -11,8 +11,9 @@ import { decodeDocument, encodeDocument } from "../../src/document/decode";
 import { fingerprintHexes } from "../../src/anchors/fingerprints";
 import { applyTransaction } from "../../src/mutation/apply";
 import { sha256Hex } from "../../src/utils";
+import { clearSweptDirsForTests, writeInPlace, precommitVerify } from "../../src/filesystem/atomic-write";
 import { join } from "path";
-import { linkSync, symlinkSync, statSync, readlinkSync, unlinkSync } from "fs";
+import { linkSync, symlinkSync, statSync, readlinkSync, unlinkSync, writeFileSync, readFileSync } from "fs";
 
 const readTool = buildReadToolDef();
 const editTool = buildEditToolDef();
@@ -36,6 +37,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  clearSweptDirsForTests();
   await resetStoreForTests();
 });
 
@@ -209,5 +211,36 @@ describe("filesystem behaviors (spec §43–§46)", () => {
         warnings: [],
       }),
     ).rejects.toThrow(/E_PATH_CHANGED/);
+  });
+});
+
+describe("atomic write internals (spec §44–§45)", () => {
+  it("writeInPlace truncates the stale tail when the replacement is shorter", async () => {
+    const dir = makeProject();
+    const p = join(dir, "shrink.txt");
+    writeFileSync(p, "one\ntwo\nthree\nfour\n");
+    await writeInPlace(p, "X\nY\n");
+    expect(readFileSync(p, "utf8")).toBe("X\nY\n");
+  });
+
+  it("writeInPlace grows the file when the replacement is longer", async () => {
+    const dir = makeProject();
+    const p = join(dir, "grow.txt");
+    writeFileSync(p, "a\n");
+    await writeInPlace(p, "a\nb\nc\n");
+    expect(readFileSync(p, "utf8")).toBe("a\nb\nc\n");
+  });
+
+  it("precommitVerify compares beyond the first 64 KiB chunk", async () => {
+    const dir = makeProject();
+    const p = join(dir, "big.bin");
+    const original = Buffer.alloc(200 * 1024, 7);
+    writeFileSync(p, original);
+    const tampered = Buffer.from(original);
+    tampered[150 * 1024] = 9;
+    writeFileSync(p, tampered);
+    await expect(precommitVerify(p, p, original)).rejects.toThrow(/E_FILE_CHANGED/);
+    // Equal multi-chunk content passes the chunked compare.
+    await expect(precommitVerify(p, p, tampered)).resolves.toBeUndefined();
   });
 });

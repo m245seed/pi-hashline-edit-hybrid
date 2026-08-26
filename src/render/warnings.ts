@@ -26,14 +26,6 @@ export interface BoundaryDupFinding {
   lines: string[];
 }
 
-function slicesEqual(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-
 /**
  * Detect boundary duplication for one replacement against its post-
  * transaction neighbor lines. `beforeLines` are the lines immediately
@@ -49,15 +41,18 @@ export function detectBoundaryDuplication(
   const findings: BoundaryDupFinding[] = [];
   if (replacement.length === 0) return findings;
 
-  // Trailing: largest k first (PH-EDIT-005).
+  // Trailing: largest k first (PH-EDIT-005). Compare without allocating slices.
   const maxTrailing = Math.min(replacement.length, afterLines.length);
   for (let k = maxTrailing; k >= 1; k--) {
-    if (
-      slicesEqual(
-        replacement.slice(replacement.length - k),
-        afterLines.slice(0, k),
-      )
-    ) {
+    let equal = true;
+    const repStart = replacement.length - k;
+    for (let i = 0; i < k; i++) {
+      if (replacement[repStart + i] !== afterLines[i]) {
+        equal = false;
+        break;
+      }
+    }
+    if (equal) {
       findings.push({
         kind: "trailing",
         size: k,
@@ -70,12 +65,15 @@ export function detectBoundaryDuplication(
   // Leading: largest k first.
   const maxLeading = Math.min(replacement.length, beforeLines.length);
   for (let k = maxLeading; k >= 1; k--) {
-    if (
-      slicesEqual(
-        replacement.slice(0, k),
-        beforeLines.slice(beforeLines.length - k),
-      )
-    ) {
+    let equal = true;
+    const beforeStart = beforeLines.length - k;
+    for (let i = 0; i < k; i++) {
+      if (replacement[i] !== beforeLines[beforeStart + i]) {
+        equal = false;
+        break;
+      }
+    }
+    if (equal) {
       findings.push({
         kind: "leading",
         size: k,
@@ -165,8 +163,9 @@ export function computePostTransactionTexts(
  *
  *   removedLines >= minRemovedLines AND removedLines > removedRatio * max(1, addedLines)
  *
- * Thresholds come from the configurable `largeEditGuard` constants. This
- * heuristic only increases caution; it never authorizes an edit.
+ * Thresholds come from the configurable large-edit guard (see
+ * getLargeEditGuard/setLargeEditGuard in constants.ts). This heuristic
+ * only increases caution; it never authorizes an edit.
  */
 export function isLargeDestructiveChange(
   removedLines: number,

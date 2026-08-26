@@ -14,13 +14,14 @@
  * explicit top-level escape hatches and never authorize an edit on their own.
  */
 
-import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { HASHLINE_PROTOCOL_ID } from "../integration/protocol";
 import { Type } from "typebox";
 import { toCwd } from "../paths";
-import { abortIf, sha256Hex } from "../utils";
+import { abortIf, debugLog, sha256Hex } from "../utils";
 import { withFileMutationQueue } from "../filesystem/concurrency";
 import { resolveTarget } from "../filesystem/resolve-target";
-import { largeEditGuard } from "../constants";
+import { getLargeEditGuard } from "../constants";
 import {
   validateEditRequest,
   type EditRequest,
@@ -62,19 +63,8 @@ import {
   mutationEventBase,
 } from "../integration/ipc";
 import { fingerprintHexes } from "../anchors/fingerprints";
-
-export interface MutationMetrics {
-  classification: "applied" | "noop";
-  edits_attempted: number;
-  edits_applied: number;
-  edits_noop: number;
-  lines_added: number;
-  lines_removed: number;
-  warnings: number;
-  before_revision: string;
-  after_revision: string;
-  transaction_id: string | null;
-}
+import type { MutationMetrics } from "./mutation-types";
+export type { MutationMetrics } from "./mutation-types";
 
 export interface EditToolDetails {
   diff?: string;
@@ -82,13 +72,14 @@ export interface EditToolDetails {
   hashline: ReturnType<typeof hashlineDetails>;
 }
 
+// Authoritative checks in src/mutation/validate.ts
 const editSchema = Type.Object(
   {
     path: Type.String({ description: "Path to the file to edit" }),
     edits: Type.Array(
       Type.Object(
         {
-          range: Type.Array(Type.String(), {
+          range: Type.Array(Type.String({ pattern: "^[A-Za-z0-9]{4}$" }), {
             minItems: 2,
             maxItems: 2,
             description:
@@ -137,11 +128,10 @@ const editSchema = Type.Object(
   },
   {
     additionalProperties: false,
-    $id: "pi-hashline/edit@1",
   },
 );
 
-const E_DESC = `Protocol-ID: pi-hashline/1 (anchor width 4). Replace one or more anchored line ranges in a single file, atomically. Ranges reference the 4-character anchors returned by read/grep/diff output. Every line in every range must have been shown to you in this session with exactly the content it has now; otherwise the whole call fails and nothing is modified. Multiple ranges are validated together and committed as one transaction.`;
+const E_DESC = `Protocol-ID: ${HASHLINE_PROTOCOL_ID} (anchor width 4). Replace one or more anchored line ranges in a single file, atomically. Ranges reference the 4-character anchors returned by read/grep/diff output. Every line in every range must have been shown to you in this session with exactly the content it has now; otherwise the whole call fails and nothing is modified. Multiple ranges are validated together and committed as one transaction.`;
 
 const E_SNIPPET =
   "edit: replace anchored ranges in one file; all ranges must be fully shown and exact; ranges must not overlap; nothing is applied unless every edit validates.";
@@ -345,9 +335,10 @@ async function runEdit(input: RunEditInput): Promise<ReturnType<ToolDefinition<a
       for (const op of sortedOps) {
         const removed = op.end - op.start + 1;
         const added = op.lines.length;
-        if (isLargeDestructiveChange(removed, added, largeEditGuard)) {
+        const guard = getLargeEditGuard();
+        if (isLargeDestructiveChange(removed, added, guard)) {
           throw new Error(
-            largeDestructiveRejection(request.path, removed, added, largeEditGuard),
+            largeDestructiveRejection(request.path, removed, added, guard),
           );
         }
       }
@@ -459,6 +450,7 @@ async function runEdit(input: RunEditInput): Promise<ReturnType<ToolDefinition<a
           .filter((c): c is string => Boolean(c)),
       }),
     );
+    debugLog("edit committed", { path: mutationTargetPath, metrics, warnings });
 
     return {
       content: [{ type: "text", text }],
@@ -476,8 +468,4 @@ async function runEdit(input: RunEditInput): Promise<ReturnType<ToolDefinition<a
       },
     };
   });
-}
-
-export function registerEditTool(pi: ExtensionAPI): void {
-  pi.registerTool(buildEditToolDef());
 }

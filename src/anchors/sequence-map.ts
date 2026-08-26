@@ -18,23 +18,66 @@ export function alignSequences<T>(
   oldSeq: readonly T[],
   newSeq: readonly T[],
 ): Map<number, number> {
-  const parts = Diff.diffArrays(oldSeq as T[], newSeq as T[]);
-  const mapping = new Map<number, number>();
-  let oldPos = 0;
-  let newPos = 0;
-  for (const part of parts) {
-    const count = part.value.length;
-    if (part.added) {
-      newPos += count;
-    } else if (part.removed) {
-      oldPos += count;
-    } else {
-      for (let i = 0; i < count; i++) {
-        mapping.set(newPos + i, oldPos + i);
+  const n = oldSeq.length;
+  if (n === newSeq.length) {
+    let identical = true;
+    for (let i = 0; i < n; i++) {
+      if (oldSeq[i] !== newSeq[i]) {
+        identical = false;
+        break;
       }
-      oldPos += count;
-      newPos += count;
+    }
+    if (identical) {
+      const mapping = new Map<number, number>();
+      for (let i = 0; i < n; i++) mapping.set(i, i);
+      return mapping;
     }
   }
+
+  // Prefix and suffix trimming
+  let prefix = 0;
+  while (prefix < oldSeq.length && prefix < newSeq.length && oldSeq[prefix] === newSeq[prefix]) {
+    prefix++;
+  }
+  let oldSuffix = oldSeq.length - 1;
+  let newSuffix = newSeq.length - 1;
+  while (oldSuffix >= prefix && newSuffix >= prefix && oldSeq[oldSuffix] === newSeq[newSuffix]) {
+    oldSuffix--;
+    newSuffix--;
+  }
+
+  const mapping = new Map<number, number>();
+  for (let i = 0; i < prefix; i++) {
+    mapping.set(i, i);
+  }
+
+  const oldMid = oldSeq.slice(prefix, oldSuffix + 1);
+  const newMid = newSeq.slice(prefix, newSuffix + 1);
+
+  if (oldMid.length > 0 && newMid.length > 0) {
+    const parts = Diff.diffArrays(oldMid as T[], newMid as T[]);
+    let oldPos = prefix;
+    let newPos = prefix;
+    for (const part of parts) {
+      const count = part.value.length;
+      if (part.added) {
+        newPos += count;
+      } else if (part.removed) {
+        oldPos += count;
+      } else {
+        for (let i = 0; i < count; i++) {
+          mapping.set(newPos + i, oldPos + i);
+        }
+        oldPos += count;
+        newPos += count;
+      }
+    }
+  }
+
+  const suffixCount = oldSeq.length - 1 - oldSuffix;
+  for (let i = 0; i < suffixCount; i++) {
+    mapping.set(newSeq.length - suffixCount + i, oldSeq.length - suffixCount + i);
+  }
+
   return mapping;
 }

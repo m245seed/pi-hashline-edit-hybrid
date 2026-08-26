@@ -15,15 +15,18 @@ import { spawn, spawnSync } from "child_process";
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { relative, basename, join } from "path";
-import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { toCwd } from "../paths";
-import { abortIf } from "../utils";
+import { abortIf, isRec, rejectUnknownFields } from "../utils";
 import { resolveTarget } from "../filesystem/resolve-target";
 import { loadAnchoredFile } from "../mutation/transaction";
 import { renderLinesUnserved } from "../render/hashline";
-import { serveLines } from "../served/ledger";
+import { serveLines, servedWindowNotice } from "../served/ledger";
 import { hashlineDetails } from "../render/result-details";
+import { HASHLINE_PROTOCOL_ID } from "../integration/protocol";
+const GREP_ROOT_KEYS = new Set(["pattern", "path", "glob", "ignoreCase", "literal", "context", "limit"]);
+
 
 export interface GrepToolDetails {
   matches: number;
@@ -47,17 +50,16 @@ const grepSchema = Type.Object(
   },
   {
     additionalProperties: false,
-    $id: "pi-hashline/grep@1",
   },
 );
 
-const G_DESC = `Protocol-ID: pi-hashline/1 (anchor width 4). Search files with ripgrep and return matching lines with stable 4-character anchors (same engine as read), so results can drive edit/insert directly. Match lines and context lines are fully shown and become authorized for destructive edits.`;
+const G_DESC = `Protocol-ID: ${HASHLINE_PROTOCOL_ID} (anchor width 4). Search files with ripgrep and return matching lines with stable 4-character anchors (same engine as read), so results can drive edit/insert directly. Match lines and context lines are fully shown and become authorized for destructive edits.`;
 
 const G_SNIPPET =
   "grep: anchored search; match and context lines carry edit-ready anchors, enabling grep → edit without a separate read.";
 
 const DEFAULT_LIMIT = 100;
-const MAX_OUTPUT_CHARS = 50 * 1024;
+const MAX_OUTPUT_BYTES = 50 * 1024;
 
 function findRgPath(): string | null {
   const piBin = join(homedir(), ".pi", "bin");
@@ -89,6 +91,10 @@ export function buildGrepToolDef(): ToolDefinition<any, GrepToolDetails> {
 
     async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
       const params = rawParams as Record<string, unknown>;
+      if (!isRec(params)) {
+        throw new Error('[E_BAD_SHAPE] grep parameters must be an object.');
+      }
+      rejectUnknownFields(params, GREP_ROOT_KEYS, "grep request");
       const pattern = params?.pattern;
       if (typeof pattern !== "string" || pattern.length === 0) {
         throw new Error('[E_BAD_SHAPE] A non-empty "pattern" string is required.');
@@ -147,14 +153,15 @@ export function buildGrepToolDef(): ToolDefinition<any, GrepToolDetails> {
       // once they survive the output budget — a line becomes served only
       // when the model actually receives its complete contents.
       const pendingServed = new Map<string, Array<{ anchor: string; exactText: string }>>();
-      let budget = MAX_OUTPUT_CHARS;
+      let budget = MAX_OUTPUT_BYTES;
       let truncated = false;
       const pushLine = (line: string): boolean => {
-        if (line.length + 1 > budget) {
+        const lineBytes = Buffer.byteLength(line, "utf-8") + 1;
+        if (lineBytes > budget) {
           truncated = true;
           return false;
         }
-        budget -= line.length + 1;
+        budget -= lineBytes;
         outputLines.push(line);
         return true;
       };
@@ -240,14 +247,18 @@ export function buildGrepToolDef(): ToolDefinition<any, GrepToolDetails> {
         if (stopped) break;
       }
 
+      let evictedRows = 0;
       for (const [path, entries] of pendingServed) {
-        serveLines(path, entries);
+        evictedRows += serveLines(path, entries);
       }
 
       while (outputLines.length > 0 && outputLines[outputLines.length - 1] === "") {
         outputLines.pop();
       }
       let output = outputLines.join("\n");
+      if (evictedRows > 0) {
+        output += servedWindowNotice(evictedRows);
+      }
       if (!output && skippedFiles === 0) {
         return {
           content: [{ type: "text", text: "No matches found" }],
@@ -264,7 +275,7 @@ export function buildGrepToolDef(): ToolDefinition<any, GrepToolDetails> {
       }
       if (truncated) {
         notices.push(
-          `${MAX_OUTPUT_CHARS / 1024}KB output limit reached; later rows were cut before serving`,
+          `${MAX_OUTPUT_BYTES / 1024}KB output limit reached; later rows were cut before serving`,
         );
       }
       if (skippedFiles > 0) {
@@ -348,6 +359,8 @@ function runRipgrep(options: RunOptions): Promise<Map<string, LineEntry[]>> {
     signal?.addEventListener("abort", onAbort, { once: true });
 
     const fileEntries = new Map<string, LineEntry[]>();
+    // O(1) lookup per line number to replace prior O(N) entries.find
+    const fileEntryMaps = new Map<string, Map<number, LineEntry>>();
     let currentFile = "";
     let isFirstLine = true;
     let matchCount = 0;
@@ -371,6 +384,7 @@ function runRipgrep(options: RunOptions): Promise<Map<string, LineEntry[]>> {
       if (event.type === "begin") {
         currentFile = event.data?.path?.text ?? "";
         fileEntries.set(currentFile, []);
+        fileEntryMaps.set(currentFile, new Map());
         isFirstLine = true;
       } else if (event.type === "match" || event.type === "context") {
         const num = event.data?.line_number;
@@ -380,13 +394,16 @@ function runRipgrep(options: RunOptions): Promise<Map<string, LineEntry[]>> {
         isFirstLine = false;
         const normalized = noBom.endsWith("\n") ? noBom.slice(0, -1) : noBom;
         const entries = fileEntries.get(currentFile);
-        if (!entries) return;
-        const existing = entries.find((e) => e.lineNumber === num);
+        const entryMap = fileEntryMaps.get(currentFile);
+        if (!entries || !entryMap) return;
+        const existing = entryMap.get(num);
         const isMatch = event.type === "match" || (existing?.isMatch ?? false);
         if (existing) {
           existing.isMatch = isMatch;
         } else {
-          entries.push({ lineNumber: num, text: normalized, isMatch });
+          const entry: LineEntry = { lineNumber: num, text: normalized, isMatch };
+          entries.push(entry);
+          entryMap.set(num, entry);
         }
         if (event.type === "match") {
           matchCount++;
@@ -397,7 +414,6 @@ function runRipgrep(options: RunOptions): Promise<Map<string, LineEntry[]>> {
         }
       }
     });
-
     child.on("error", (error) => {
       rl.close();
       signal?.removeEventListener("abort", onAbort);
@@ -421,8 +437,4 @@ function runRipgrep(options: RunOptions): Promise<Map<string, LineEntry[]>> {
       settle(() => resolveFn(fileEntries));
     });
   });
-}
-
-export function registerGrepTool(pi: ExtensionAPI): void {
-  pi.registerTool(buildGrepToolDef());
 }

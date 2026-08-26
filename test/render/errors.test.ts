@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "fs";
 import { join, dirname, relative } from "path";
 import { fileURLToPath } from "url";
-import { ERROR_CODES, WARNING_CODES } from "../../src/render/errors";
+import { ERROR_CODES, WARNING_CODES, E_SUSPICIOUS_PATCH } from "../../src/render/errors";
 
 const srcRoot = join(dirname(fileURLToPath(import.meta.url)), "../../src");
 
@@ -36,5 +36,9 @@ describe("error and warning catalogs (spec §54, §55)", () => {
   it("error and warning codes do not overlap", () => {
     const overlap = ERROR_CODES.filter((code) => (WARNING_CODES as readonly string[]).includes(code));
     expect(overlap).toEqual([]);
+  });
+
+  it("exposes E_SUSPICIOUS_PATCH as alias for backward compatibility", () => {
+    expect(E_SUSPICIOUS_PATCH).toBe("E_DISPLAY_LIKE_CONTENT");
   });
 });

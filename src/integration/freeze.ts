@@ -86,24 +86,42 @@ function writeFreezeRow(value: string): void {
   );
 }
 
+let persistChain: Promise<void> = Promise.resolve();
+let pendingValue: string | null = null;
+let flushScheduled = false;
+
 /**
  * Persist freeze state. When the store is already open the write is
  * synchronous so a restore immediately after a freeze sees it; otherwise it
- * is deferred until the store opens.
+ * is coalesced via queueMicrotask so rapid addFreeze/removeFreeze in the
+ * same tick collapse to a single deferred write (PI:16).
  */
 function persistFreezes(value: string): void {
   try {
     writeFreezeRow(value);
+    return;
   } catch {
-    void (async () => {
-      try {
-        await loadStore();
-        writeFreezeRow(value);
-      } catch {
-        // Persistence is best-effort; in-memory state still enforces freezes.
-      }
-    })();
+    // Store not open — coalesce deferred writes
   }
+  pendingValue = value;
+  if (flushScheduled) return;
+  flushScheduled = true;
+  queueMicrotask(() => {
+    const toWrite = pendingValue;
+    pendingValue = null;
+    flushScheduled = false;
+    if (toWrite === null) return;
+    persistChain = persistChain
+      .then(async () => {
+        try {
+          await loadStore();
+          writeFreezeRow(toWrite);
+        } catch {
+          // Persistence is best-effort; in-memory state still enforces freezes.
+        }
+      })
+      .catch(() => {});
+  });
 }
 
 /** Restore persisted freeze state at session start (spec §12.5). */

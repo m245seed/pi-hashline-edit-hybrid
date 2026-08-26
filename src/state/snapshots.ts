@@ -37,30 +37,42 @@ export interface UndoPayload {
 // ─── Blob codecs ────────────────────────────────────────────────────────
 
 export function encodeAnchorsBlob(anchors: string[]): Buffer {
-  return Buffer.from(anchors.join(""), "utf-8");
+  const out = Buffer.allocUnsafe(anchors.length * 4);
+  for (let i = 0; i < anchors.length; i++) {
+    const anchor = anchors[i]!;
+    // 'ascii' writes silently drop high bytes and a short string would
+    // leave uninitialized bytes; validate so corruption fails at the
+    // producer instead of decoding as a plausible-but-wrong anchor.
+    if (!ANCHOR_RE.test(anchor)) {
+      throw new Error(`Corrupt anchors blob encode: invalid anchor ${JSON.stringify(anchor)}`);
+    }
+    out.write(anchor, i * 4, 4, "ascii");
+  }
+  return out;
 }
 
 export function decodeAnchorsBlob(blob: Uint8Array, lineCount: number): string[] {
-  const text = Buffer.from(blob).toString("utf-8");
-  if (text.length !== lineCount * 4) {
+  if (blob.length !== lineCount * 4) {
     throw new Error("Corrupt anchors blob: length mismatch");
   }
-  const anchors: string[] = [];
+  const buf = Buffer.isBuffer(blob)
+    ? blob
+    : Buffer.from(blob.buffer, blob.byteOffset, blob.byteLength);
+  const anchors = new Array<string>(lineCount);
   for (let i = 0; i < lineCount; i++) {
-    const anchor = text.slice(i * 4, i * 4 + 4);
+    const anchor = buf.toString("ascii", i * 4, i * 4 + 4);
     if (!ANCHOR_RE.test(anchor)) {
       throw new Error("Corrupt anchors blob: invalid anchor");
     }
-    anchors.push(anchor);
+    anchors[i] = anchor;
   }
   return anchors;
 }
 
 export function encodeFingerprintsBlob(fingerprints: string[]): Buffer {
-  const out = Buffer.alloc(fingerprints.length * FINGERPRINT_BYTES);
+  const out = Buffer.allocUnsafe(fingerprints.length * FINGERPRINT_BYTES);
   for (let i = 0; i < fingerprints.length; i++) {
-    const bytes = Buffer.from(fingerprints[i]!, "hex");
-    bytes.copy(out, i * FINGERPRINT_BYTES);
+    out.write(fingerprints[i]!, i * FINGERPRINT_BYTES, FINGERPRINT_BYTES, "hex");
   }
   return out;
 }
@@ -92,7 +104,7 @@ export function decodeRetiredBlob(blob: Uint8Array): Set<string> {
   }
   const retired = new Set<string>();
   for (let i = 0; i < blob.length; i += 3) {
-    const idx = Buffer.from(blob).readUIntBE(i, 3);
+    const idx = (blob[i]! << 16) | (blob[i + 1]! << 8) | blob[i + 2]!;
     retired.add(idxToAnchor(idx));
   }
   return retired;
@@ -189,6 +201,9 @@ export function deleteSnapshot(store: Store, path: string): void {
 /**
  * Finalize a committed transaction (spec §29 Phase 7): atomically update the
  * anchor snapshot, the undo record, and clear the pending journal row.
+ * Uses raw statements inside the transaction — inner busy-retry is handled
+ * by the outer withTransaction, not per-statement, to avoid retry-within-
+ * transaction lock loss.
  */
 export function finalizeTransaction(opts: {
   snapshot: FileSnapshot;
@@ -197,7 +212,30 @@ export function finalizeTransaction(opts: {
 }): void {
   withTransaction(() => {
     const store = requireStore();
-    putSnapshot(store, opts.snapshot.path, opts.snapshot);
+    // Inline snapshot upsert without inner withBusyRetry; outer transaction handles retries.
+    store.db
+      .prepare(
+        `INSERT INTO files (path, raw_checksum, line_count, anchor_epoch, anchors, fingerprints, retired, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(path) DO UPDATE SET
+           raw_checksum = excluded.raw_checksum,
+           line_count = excluded.line_count,
+           anchor_epoch = excluded.anchor_epoch,
+           anchors = excluded.anchors,
+           fingerprints = excluded.fingerprints,
+           retired = excluded.retired,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        opts.snapshot.path,
+        opts.snapshot.rawChecksum,
+        opts.snapshot.lineCount,
+        1,
+        encodeAnchorsBlob(opts.snapshot.anchors),
+        encodeFingerprintsBlob(opts.snapshot.fingerprints),
+        encodeRetiredBlob(opts.snapshot.retired),
+        opts.snapshot.updatedAt,
+      );
     if (opts.undoPayload) {
       upsertUndoRow(store, opts.undoPayload);
     } else {

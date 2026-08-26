@@ -12,6 +12,7 @@
 
 import { readFile } from "fs/promises";
 import { ANCHOR_SPACE } from "../anchors/alphabet";
+import { ANCHOR_SPACE_PRESSURE_RATIO } from "../constants";
 import { fingerprintHexes } from "../anchors/fingerprints";
 import { reconcileState } from "../anchors/reconcile";
 import { decodeDocument, encodeDocument } from "../document/decode";
@@ -123,16 +124,15 @@ export async function loadAnchoredFile(
       texts,
     );
   }
+  const retired = new Set(snapshot?.retired);
+  for (const a of reconciled.retiredAdded) retired.add(a);
   const newSnapshot: FileSnapshot = {
     path: realPath,
     rawChecksum: checksum,
     lineCount: texts.length,
     anchors: reconciled.anchors,
     fingerprints,
-    retired: new Set([
-      ...(snapshot?.retired ?? []),
-      ...reconciled.retiredAdded,
-    ]),
+    retired,
     updatedAt: Date.now(),
   };
   putSnapshot(store, realPath, newSnapshot);
@@ -289,7 +289,7 @@ export async function commitMutation(input: CommitInput): Promise<void> {
         // else from the atomic-replacement phase is an unexpected safe-
         // replacement failure (spec §45) — never a silent non-atomic
         // fallback.
-        if (error instanceof Error && /E_(FILE_CHANGED|PATH_CHANGED|ABORTED)/.test(error.message)) {
+        if (error instanceof Error && /E_(FILE_CHANGED|PATH_CHANGED|ABORTED|FILE_TOO_LARGE)/.test(error.message)) {
           throw error;
         }
         throw new Error(
@@ -345,7 +345,7 @@ export function anchorSpaceWarning(
   retiredCount: number,
 ): string | undefined {
   const used = activeCount + retiredCount;
-  if (used / ANCHOR_SPACE > 0.95) {
+  if (used / ANCHOR_SPACE > ANCHOR_SPACE_PRESSURE_RATIO) {
     return `[W_ANCHOR_SPACE_PRESSURE] ${used} of ${ANCHOR_SPACE} anchor values are in use for this file.`;
   }
   return undefined;

@@ -40,17 +40,21 @@ export function detectBom(raw: Uint8Array): UtfBom | undefined {
 
 export function looksBinary(raw: Uint8Array): boolean {
   const sample = raw.subarray(0, SNIFF_BYTES);
-  if (sample.includes(0)) return true;
+  // Single-pass scan: check NUL byte and count control chars together
   let control = 0;
   for (const byte of sample) {
+    if (byte === 0) return true;
     if (byte < 0x09 || (byte > 0x0d && byte < 0x20)) control++;
   }
-  return control / sample.length > 0.3;
+  return sample.length > 0 && control / sample.length > 0.3;
 }
+
+// Reuse a single TextDecoder to avoid per-call allocation and GC pressure.
+const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 /** Strict UTF-8 decode. Throws TypeError on invalid sequences. */
 export function decodeUtf8Strict(raw: Uint8Array): string {
-  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw);
+  return utf8Decoder.decode(raw);
 }
 
 /**

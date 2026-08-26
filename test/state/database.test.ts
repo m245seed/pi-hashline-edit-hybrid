@@ -3,7 +3,7 @@ import { join } from "path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { withStateDir } from "../support/env";
 import { initHasher } from "../../src/anchors/hasher";
-import { loadStore, resetStoreForTests, shutdownStore, isCorruptionError, withBusyRetry } from "../../src/state/database";
+import { loadStore, resetStoreForTests, shutdownStore, isCorruptionError, withBusyRetry, withBusyRetryAsync } from "../../src/state/database";
 import { statePath, configDir } from "../../src/paths";
 
 beforeAll(async () => {
@@ -88,5 +88,26 @@ describe("busy retry (spec §49)", () => {
       }),
     ).toThrow(/boom/);
     expect(calls).toBe(1);
+  });
+
+  it("retries busy operations asynchronously and succeeds", async () => {
+    let calls = 0;
+    const result = await withBusyRetryAsync(async () => {
+      calls++;
+      if (calls < 2) {
+        throw Object.assign(new Error("database is locked"), { errcode: 5 });
+      }
+      return "async-ok";
+    });
+    expect(result).toBe("async-ok");
+    expect(calls).toBe(2);
+  });
+
+  it("gives up after bounded async retries", async () => {
+    await expect(
+      withBusyRetryAsync(() => {
+        throw Object.assign(new Error("database is locked"), { errcode: 6 });
+      }),
+    ).rejects.toThrow(/locked/);
   });
 });

@@ -19,15 +19,29 @@ export const STALE_TEMP_MS = 60 * 60 * 1000;
 export const ANCHOR_SPACE_PRESSURE_RATIO = 0.95;
 
 /**
- * Large destructive edit guard thresholds (PH-EDIT-006..008). Configurable:
- * mutate this object (e.g. from Sentinel policy integration) to adjust.
+ * Large destructive edit guard thresholds (PH-EDIT-006..008).
+ * Use getLargeEditGuard() / setLargeEditGuard() to inspect or adjust.
  */
-export const largeEditGuard = {
-  /** Reject when removedLines >= minRemovedLines AND the ratio test passes. */
+export interface LargeEditGuardConfig {
+  readonly minRemovedLines: number;
+  readonly removedRatio: number;
+}
+
+let activeLargeEditGuard: LargeEditGuardConfig = Object.freeze({
   minRemovedLines: 20,
-  /** Reject when removedLines > removedRatio * max(1, addedLines). */
   removedRatio: 3,
-};
+});
+
+export function getLargeEditGuard(): LargeEditGuardConfig {
+  return activeLargeEditGuard;
+}
+
+export function setLargeEditGuard(config: Partial<LargeEditGuardConfig>): void {
+  activeLargeEditGuard = Object.freeze({
+    ...activeLargeEditGuard,
+    ...config,
+  });
+}
 
 /** Persistent store tuning (spec §49). */
 export const DB_BUSY_TIMEOUT = 1000;

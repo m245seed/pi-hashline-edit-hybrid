@@ -4,6 +4,8 @@
  * Mutations follow symlinks rather than replacing the symlink itself, so
  * editing `src/config.ts` changes the real target while preserving the
  * symbolic link. Symlink loops are detected and reported as ELOOP.
+ * Note: visitedSymlinks tracks visited paths (matching Node realpath semantics)
+ * rather than (device, inode) pairs.
  */
 
 import { lstat, readlink } from "fs/promises";

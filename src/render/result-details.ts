@@ -9,6 +9,7 @@
  */
 
 import { getContextEpoch } from "../served/epoch";
+import { HASHLINE_PROTOCOL_ID, HASHLINE_RESULT_PROTOCOL } from "../integration/protocol";
 
 /** Canonical Sentinel outcome vocabulary (mirrors Sentinel, no import). */
 export type HashlineOutcome =
@@ -23,8 +24,8 @@ export type HashlineOutcome =
   | "fatal_error";
 
 export interface HashlineResultDetails {
-  protocol: "pi-hashline-result/1";
-  toolProtocol: "pi-hashline/1";
+  protocol: typeof HASHLINE_RESULT_PROTOCOL;
+  toolProtocol: typeof HASHLINE_PROTOCOL_ID;
   outcome: HashlineOutcome;
   code: string;
   exactContent: boolean;
@@ -52,11 +53,10 @@ export interface HashlineDetailsInput {
   fileSha256?: string;
   warnings?: string[];
 }
-
 export function hashlineDetails(input: HashlineDetailsInput): HashlineResultDetails {
   const details: HashlineResultDetails = {
-    protocol: "pi-hashline-result/1",
-    toolProtocol: "pi-hashline/1",
+    protocol: HASHLINE_RESULT_PROTOCOL,
+    toolProtocol: HASHLINE_PROTOCOL_ID,
     outcome: input.outcome,
     code: input.code,
     exactContent: input.exactContent ?? true,

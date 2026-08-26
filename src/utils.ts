@@ -37,3 +37,16 @@ export function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
+export function debugLog(message: string, ...args: unknown[]): void {
+  if (process.env.HASHLINE_DEBUG) {
+    console.error(`[hashline:debug] ${message}`, ...args);
+  }
+}
+
+export function normPosInt(value: unknown, name: string, label = "Read request"): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error(`[E_BAD_SHAPE] ${label} field "${name}" must be a positive integer.`);
+  }
+  return value;
+}

@@ -1,6 +1,6 @@
 # pi-hashline-edit-hybrid
 
-A fail-closed, hash-anchored text mutation system for [pi-coding-agent](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent), built from the technical specification in `Hybrid Hashline Editor — Technical Specification v1.0.md`.
+A fail-closed, hash-anchored text mutation system for [pi-coding-agent](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent)
 
 It combines the state/anchor safety of `pi-hashline-edit-pro` (persistent stable line identities, served-range authorization, persistent stale-safe undo, atomic temp/rename writes, SQLite state) with the strict semantics and transactional multi-edit ergonomics of `pi-hashline-edit` (dedicated `edit`/`insert`, integrated anchored `grep`, literal payloads, warnings instead of heuristic rewriting).
 
@@ -18,7 +18,7 @@ It combines the state/anchor safety of `pi-hashline-edit-pro` (persistent stable
 
 ## Tools
 
-The extension registers `read`, `grep`, `edit`, `insert`, and `undo`, overriding pi's generic `read`/`grep`/`edit` by name. A successful `write` clears hybrid undo, reconciles anchors, invalidates only the served lines that no longer match, and (by default) returns an anchored auto-read preview.
+The extension registers `read`, `grep`, `edit`, `insert`, `write`, and `undo`, overriding pi's generic `read`/`grep`/`edit`/`write` by name. A successful `write` clears hybrid undo, reconciles anchors, invalidates only the served lines that no longer match, and (by default) returns an anchored auto-read preview.
 
 ```text
 read → edit / insert → anchored diff → edit / insert → ...   (no unnecessary rereads)
@@ -43,7 +43,7 @@ grep → edit                                                  (grep output is e
 
 `range` is exactly two inclusive anchors; `lines` are literal logical lines (`[]` deletes). All ranges resolve against the same pre-edit document; every line of every range must be served and exact; overlapping ranges (even sharing an endpoint line) are rejected; a non-empty file can never be emptied via `edit` (`E_WOULD_EMPTY`); no-op transactions change nothing and report `No changes made.` The result is one combined anchored diff whose `" "` and `"+"` rows are immediately editable.
 
-Optional top-level fields: `allow_display_like_content` (writes pasted `ANCHOR│...` content literally instead of rejecting it with `E_SUSPICIOUS_PATCH`), `final_newline` (`preserve` | `present` | `absent`), and `expected_revision` (strict whole-file compare-and-swap mode).
+Optional top-level fields: `allow_display_like_content` (writes pasted `ANCHOR│...` content literally instead of rejecting it with `E_DISPLAY_LIKE_CONTENT`), `final_newline` (`preserve` | `present` | `absent`), and `expected_revision` (strict whole-file compare-and-swap mode).
 
 ### `insert`
 
@@ -58,6 +58,10 @@ Optional top-level fields: `allow_display_like_content` (writes pasted `ANCHOR�
 
 The anchor line itself must have been served and must still match. Multiple inserts are transactional; same anchor + direction keep request order. In an empty file (one empty line), `insert after` produces a leading blank line (`"\ncontent"`), while `insert before` produces the natural `"content\n"`.
 
+### `write`
+
+`{ path, content, replace_existing?, expected_revision?, allow_display_like_content? }` → atomically creates or fully replaces a file. Overwriting an existing file requires a prior full-file `read` in the current epoch (or the explicit high-risk `replace_existing: true`); `expected_revision` adds strict CAS mode. Content that looks like pasted hashline display output (`ANCHOR│...` rows) is rejected with `E_DISPLAY_LIKE_CONTENT` unless `allow_display_like_content: true` is set. Enforces the global byte/line limits (`E_FILE_TOO_LARGE`) and returns a bounded anchored preview whose rows are edit-ready.
+
 ### `undo`
 
 Reverts the last hybrid transaction on one file (all sub-edits together), persisted across restarts. Succeeds only if the file's current checksum exactly matches the transaction's result; otherwise `E_UNDO_STALE` and nothing is overwritten. Restores exact bytes (BOM, CRLF/CR/LF, final newline, trailing whitespace) and exact anchors — anchors from before the transaction return exactly; anchors introduced by the undone transaction are retired.
@@ -68,9 +72,9 @@ Runs ripgrep when available and renders matches with anchors from the same persi
 
 ## State and safety model
 
-- **Persistent state** (`~/.config/pi-hashline-edit-hybrid/state.sqlite`, honoring `XDG_CONFIG_HOME`): per-file anchor snapshots (compact blobs), one undo record per file, and a `pending_transactions` crash-recovery journal. WAL mode, `synchronous=FULL`, busy timeout with bounded retries, schema versioning, quick integrity check, and corruption quarantine (§48–§49).
-- **Served authorization is session-scoped** (§8.1): anchors and undo survive restarts; permission to destructively edit previously viewed lines does not. A restart requires `read`/`grep` again.
-- **Stale vs unseen.** A range referencing lines never shown fails with `E_RANGE_UNSERVED`; a previously shown line that changed externally fails with `E_RANGE_STALE`. Both return a bounded fresh anchored view that becomes served, so retries work immediately (§10, §71).
+- **Persistent state** (`~/.config/pi-hashline-edit-hybrid/state.sqlite`, honoring `XDG_CONFIG_HOME`): per-file anchor snapshots (compact blobs), one undo record per file, and a `pending_transactions` crash-recovery journal. WAL mode, `synchronous=NORMAL` (committed rows survive app crashes; a power loss may lose the most recent journal commits — accepted tradeoff for lower fsync latency), busy timeout with bounded retries, schema versioning, quick integrity check, and corruption quarantine (§48–§49).
+- **Served authorization is session-scoped** (§8.1): anchors and undo survive restarts; permission to destructively edit previously viewed lines does not. A restart requires `read`/`grep` again. The served window is capped (5,000 lines per file, 20,000 session-wide); rows evicted by the cap are reported with `W_SERVED_WINDOW_EXCEEDED` and must be re-read before editing.
+- **Stale vs unseen.** A range referencing lines never shown fails with `E_ANCHOR_NOT_SERVED`; a previously shown line that changed externally fails with `E_RANGE_STALE`. Both return a bounded fresh anchored view that becomes served, so retries work immediately (§10, §71).
 - **Line identity is exact.** Fingerprints are SHA-256 of the exact logical line text — trailing whitespace is significant (§4.2). Untouched lines preserve their exact terminators; new lines use the file's dominant ending; the final newline follows the `final_newline` policy (§40–§41). UTF-8 BOM is document metadata, never line 1 (§42).
 - **Symlinks** are followed (the target is edited, the link preserved; the mutation queue keys on the resolved target); **hard links** are preserved with an in-place write and a `W_HARDLINK_NONATOMIC` warning; file mode bits survive atomic renames (§43–§46). There is no silent non-atomic fallback (§45).
 

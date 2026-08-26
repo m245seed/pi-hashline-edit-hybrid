@@ -63,6 +63,13 @@ describe("line model (spec §40)", () => {
     }
   });
 
+  it("round-trips arbitrary lines through split/join", () => {
+    const sample = "line1\r\nline2\nline3\rline4\n\nline6";
+    const lines = splitTextLines(sample);
+    expect(joinTextLines(lines)).toBe(sample);
+    expect(splitTextLines(joinTextLines(lines))).toEqual(lines);
+  });
+
   it("preserves BOM as document metadata, not line 1", () => {
     const doc = decodeDocument(Buffer.from("\uFEFFline1\nline2\n", "utf-8"), "t");
     expect(doc.bom).toBe("\uFEFF");

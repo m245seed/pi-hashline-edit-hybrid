@@ -125,6 +125,7 @@ export async function runRecovery(): Promise<RecoverySummary> {
     withTransaction(() => {
       deletePendingTransaction(store, entry.transactionId);
       deleteUndoRecord(store, entry.path);
+      deleteSnapshot(store, entry.path);
     });
     summary.diverged++;
     summary.warnings.push(

@@ -17,7 +17,7 @@
 import { HASH_SEP } from "../anchors/alphabet";
 import { DIFF_MAX_OUTPUT_BYTES, MAX_DISPLAY_LINE_BYTES } from "../constants";
 import { formatSize } from "../utils";
-import { serveLines } from "../served/ledger";
+import { serveLines, servedWindowNotice } from "../served/ledger";
 import { applyOutputBudget, type CandidateRow } from "./budget";
 import type { DiffRow } from "../mutation/apply";
 
@@ -53,7 +53,11 @@ export function renderDiff(path: string, rows: DiffRow[]): RenderedDiff {
       if (bytes > MAX_DISPLAY_LINE_BYTES) {
         candidates.push({ rendered: omittedRemovedRow(bytes) });
       } else {
-        candidates.push({ rendered: formatDiffRow(row) });
+        const rendered = formatDiffRow(row);
+        candidates.push({
+          rendered,
+          renderedBytes: bytes + (row.anchor ? 8 : 5),
+        });
       }
       continue;
     }
@@ -67,22 +71,22 @@ export function renderDiff(path: string, rows: DiffRow[]): RenderedDiff {
       candidates.push({ rendered: omittedCurrentRow(bytes) });
       continue;
     }
+    const rendered = formatDiffRow(row);
     candidates.push({
-      rendered: formatDiffRow(row),
+      rendered,
+      renderedBytes: bytes + 8,
       servable: { anchor: row.anchor, exactText: row.text },
     });
   }
-
   const budgeted = applyOutputBudget(candidates, DIFF_MAX_OUTPUT_BYTES);
-  const output = budgeted.rows.slice();
-  if (budgeted.truncated) {
-    output.push(
-      `[diff output truncated: ${budgeted.dropped} more row(s) were omitted to stay within the ${formatSize(DIFF_MAX_OUTPUT_BYTES)} output budget. Omitted rows are not authorized for edits; use read to view them.]`,
-    );
-  }
-  serveLines(path, budgeted.served);
+  const output = budgeted.truncated
+    ? [...budgeted.rows, `[diff output truncated: ${budgeted.dropped} more row(s) were omitted to stay within the ${formatSize(DIFF_MAX_OUTPUT_BYTES)} output budget. Omitted rows are not authorized for edits; use read to view them.]`]
+    : budgeted.rows;
+  const evictedRows = serveLines(path, budgeted.served);
+  let text = output.join("\n");
+  if (evictedRows > 0) text += servedWindowNotice(evictedRows);
   return {
-    text: output.join("\n"),
+    text,
     served: budgeted.served,
     servedRows: budgeted.served.length,
     truncated: budgeted.truncated,

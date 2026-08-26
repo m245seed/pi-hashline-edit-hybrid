@@ -9,29 +9,34 @@
  * the anchor is an address, not a security hash.
  */
 
-import { ANCHOR_SPACE, ANCHOR_PROBE_STRIDE, idxToAnchor } from "./alphabet";
-import { xxh64 } from "./hasher";
+import { ANCHOR_SPACE, ANCHOR_PROBE_STRIDE, anchorToIdx, idxToAnchor } from "./alphabet";
+import { getH } from "./hasher";
 
 export class AnchorAllocator {
-  private readonly active: Set<string>;
-  private readonly retired: ReadonlySet<string>;
-  private readonly hint = { value: 0 };
+  private readonly active: Set<number>;
+  private readonly retired: Set<number>;
 
   constructor(active: ReadonlySet<string>, retired: ReadonlySet<string>) {
-    this.active = new Set(active);
-    this.retired = retired;
+    this.active = new Set<number>();
+    for (const a of active) {
+      const idx = anchorToIdx(a);
+      if (idx >= 0) this.active.add(idx);
+    }
+    this.retired = new Set<number>();
+    for (const a of retired) {
+      const idx = anchorToIdx(a);
+      if (idx >= 0) this.retired.add(idx);
+    }
   }
 
   /** Deterministic allocation for a line's exact text. */
   allocate(text: string): string {
-    const base = Number(xxh64(text) % BigInt(ANCHOR_SPACE));
+    const base = getH().h32(text) % ANCHOR_SPACE;
     let idx = base;
     for (let probes = 0; probes < ANCHOR_SPACE; probes++) {
-      const candidate = idxToAnchor(idx);
-      if (!this.active.has(candidate) && !this.retired.has(candidate)) {
-        this.active.add(candidate);
-        if (idx > this.hint.value) this.hint.value = idx;
-        return candidate;
+      if (!this.active.has(idx) && !this.retired.has(idx)) {
+        this.active.add(idx);
+        return idxToAnchor(idx);
       }
       idx = (idx + ANCHOR_PROBE_STRIDE) % ANCHOR_SPACE;
     }

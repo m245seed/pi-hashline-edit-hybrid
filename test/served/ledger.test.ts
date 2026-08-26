@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   resetServed,
   serveLine,
+  serveLines,
   servedText,
   markStale,
   isStale,
@@ -81,5 +82,69 @@ describe("served ledger (spec §8, §9, §37)", () => {
       ["same"],
     );
     expect(servedText("/p/f.ts", "B222")).toBe("same");
+  });
+});
+
+describe("served window caps (plan § Memory Management)", () => {
+  it("evicts the oldest per-file entries at the cap without touching other files", () => {
+    const path = "/p/big.ts";
+    for (let i = 0; i < 5000; i++) serveLine(path, `A${i}`, `t${i}`);
+    serveLine("/p/other.ts", "Zz99", "keep");
+    const evicted = serveLines(path, [{ anchor: "B001", exactText: "new" }]);
+    expect(evicted).toBe(0);
+    expect(servedText(path, "A0")).toBeUndefined();
+    expect(servedText(path, "A1")).toBe("t1");
+    expect(servedText(path, "A4999")).toBe("t4999");
+    expect(servedText(path, "B001")).toBe("new");
+    expect(servedText("/p/other.ts", "Zz99")).toBe("keep");
+  });
+
+  it("reports rows from the same call that overflow the per-file window", () => {
+    const entries = [];
+    for (let i = 0; i < 5010; i++) {
+      entries.push({ anchor: `B${String(i).padStart(4, "0")}`, exactText: `x${i}` });
+    }
+    const evicted = serveLines("/p/huge.ts", entries);
+    expect(evicted).toBe(10);
+    expect(servedText("/p/huge.ts", "B0000")).toBeUndefined();
+    expect(servedText("/p/huge.ts", "B0009")).toBeUndefined();
+    expect(servedText("/p/huge.ts", "B0010")).toBe("x10");
+    expect(servedText("/p/huge.ts", "B5009")).toBe("x5009");
+  });
+
+  it("enforces the global cap across files", () => {
+    for (let f = 0; f < 4; f++) {
+      for (let i = 0; i < 5000; i++) serveLine(`/p/f${f}.ts`, `A${i}`, `t${i}`);
+    }
+    // Total is exactly 20000; one more entry pushes it over globally and
+    // the oldest entries (f0's) are evicted across files.
+    const evicted = serveLines("/p/f4.ts", [{ anchor: "N001", exactText: "new" }]);
+    expect(evicted).toBe(0);
+    expect(servedText("/p/f0.ts", "A0")).toBeUndefined();
+    expect(servedText("/p/f0.ts", "A4999")).toBe("t4999");
+    expect(servedText("/p/f4.ts", "N001")).toBe("new");
+  });
+
+  it("stale markers are not capped (E_RANGE_STALE fidelity)", () => {
+    for (let i = 0; i < 5005; i++) markStale("/p/s.ts", `S${i}`);
+    expect(isStale("/p/s.ts", "S0")).toBe(true);
+    expect(isStale("/p/s.ts", "S5004")).toBe(true);
+  });
+
+  it("reconcileServed degrades conservatively on non-monotone mappings", () => {
+    serveLine("/p/f.ts", "A001", "middle");
+    // Crossing (hypothetical) mapping: new0→old2, new2→old0; the unmapped
+    // new line between them must still see the served old line in its gap.
+    reconcileServed(
+      "/p/f.ts",
+      ["A000", "A001", "A002"],
+      new Map([
+        [0, 2],
+        [2, 0],
+      ]),
+      ["A000", "B111", "A002"],
+      ["start", "MIDDLE", "end"],
+    );
+    expect(isStale("/p/f.ts", "B111")).toBe(true);
   });
 });

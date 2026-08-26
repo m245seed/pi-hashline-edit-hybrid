@@ -28,6 +28,13 @@ export const INSERT_ROOT_KEYS = new Set([
   "final_newline",
   "expected_revision",
 ]);
+export const WRITE_ROOT_KEYS = new Set([
+  "path",
+  "content",
+  "replace_existing",
+  "allow_display_like_content",
+  "expected_revision",
+]);
 export const INSERT_ITEM_KEYS = new Set(["anchor", "direction", "lines"]);
 
 export type FinalNewline = "preserve" | "present" | "absent";

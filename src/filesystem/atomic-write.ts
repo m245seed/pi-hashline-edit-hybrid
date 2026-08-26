@@ -20,7 +20,7 @@ import {
   type FileHandle,
 } from "fs/promises";
 import { dirname, join } from "path";
-import { STALE_TEMP_MS } from "../constants";
+import { MAX_BYTES, STALE_TEMP_MS } from "../constants";
 import { errCode } from "../utils";
 import { resolveTarget } from "./resolve-target";
 
@@ -30,9 +30,17 @@ const TEMP_UUID_RE =
 
 const sweptDirs = new Set<string>();
 
+export function clearSweptDirsForTests(): void {
+  sweptDirs.clear();
+}
 async function sweepStaleTemps(dir: string): Promise<void> {
   if (sweptDirs.has(dir)) return;
   sweptDirs.add(dir);
+  // Cap cache to avoid unbounded growth in long sessions touching many dirs
+  if (sweptDirs.size > 500) {
+    const oldest = sweptDirs.values().next().value as string | undefined;
+    if (oldest !== undefined) sweptDirs.delete(oldest);
+  }
   try {
     const entries = await readdir(dir, { withFileTypes: true });
     const now = Date.now();
@@ -48,7 +56,6 @@ async function sweepStaleTemps(dir: string): Promise<void> {
     }
   } catch {}
 }
-
 export async function syncDir(dir: string): Promise<void> {
   if (process.platform === "win32") return;
   try {
@@ -160,17 +167,40 @@ export async function precommitVerify(
       `[E_FILE_CHANGED] The file ${path} appeared on disk during transaction preparation. Nothing was modified.`,
     );
   }
-  let current: Buffer;
+  let equal = false;
   try {
     const info = await handle.stat();
-    current = Buffer.alloc(info.size);
-    if (info.size > 0) {
-      await handle.read(current, 0, info.size, 0);
+    if (info.size > MAX_BYTES) {
+      throw new Error(
+        `[E_FILE_TOO_LARGE] The file ${path} is ${info.size} bytes, which exceeds the ${MAX_BYTES} byte limit. Nothing was modified.`,
+      );
+    }
+    // Fast-path size mismatch: content cannot be equal
+    if (info.size !== rawBefore.length) {
+      equal = false;
+    } else if (info.size === 0) {
+      equal = true;
+    } else {
+      // Chunked compare to avoid allocating a second full-file buffer for large files
+      const CHUNK = 64 * 1024;
+      let offset = 0;
+      let matches = true;
+      const buf = Buffer.alloc(Math.min(CHUNK, info.size));
+      while (offset < info.size) {
+        const toRead = Math.min(CHUNK, info.size - offset);
+        const { bytesRead } = await handle.read(buf, 0, toRead, offset);
+        if (bytesRead !== toRead || !rawBefore.subarray(offset, offset + toRead).equals(buf.subarray(0, toRead))) {
+          matches = false;
+          break;
+        }
+        offset += toRead;
+      }
+      equal = matches;
     }
   } finally {
     await handle.close();
   }
-  if (!current.equals(rawBefore)) {
+  if (!equal) {
     throw new Error(
       `[E_FILE_CHANGED] The file changed on disk during transaction preparation. Nothing was modified.`,
     );
@@ -179,16 +209,36 @@ export async function precommitVerify(
 
 /**
  * Hard-link in-place write (spec §44): recheck checksum before writing,
- * write through one open handle, fsync after.
+ * write through one open handle without truncating before the new content
+ * is fully written, then truncate if the new content is shorter.
+ * This avoids exposing concurrent readers to a temporarily empty file.
  */
 export async function writeInPlace(
   targetPath: string,
   content: string,
   mode?: number,
 ): Promise<void> {
-  const handle = await open(targetPath, "w");
+  // Use r+ to avoid O_TRUNC before write; create if missing by falling back to w
+  let handle: Awaited<ReturnType<typeof open>>;
   try {
-    await handle.writeFile(content, "utf-8");
+    handle = await open(targetPath, "r+");
+  } catch (error: unknown) {
+    if (errCode(error) === "ENOENT") {
+      handle = await open(targetPath, "w");
+    } else {
+      throw error;
+    }
+  }
+  try {
+    const data = Buffer.from(content, "utf-8");
+    await handle.writeFile(data);
+    // If new content is shorter than old file, truncate the remainder.
+    // Failures must propagate: swallowing one here would leave the file as
+    // new content + stale tail while the edit reports success (spec §45).
+    const stat = await handle.stat();
+    if (stat.size > data.length) {
+      await handle.truncate(data.length);
+    }
     await handle.sync();
     if (mode !== undefined) {
       await handle.chmod(mode);

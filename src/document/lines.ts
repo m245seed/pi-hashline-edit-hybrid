@@ -24,20 +24,40 @@ export interface Document {
   lines: TextLine[];
 }
 
-const LINE_SPLIT_RE = /(\r\n|\n|\r)/;
-
 export function splitTextLines(text: string): TextLine[] {
   if (text.length === 0) return [{ text: "", eol: "" }];
-  const parts = text.split(LINE_SPLIT_RE);
-  if (text.endsWith("\n") || text.endsWith("\r")) {
-    parts.pop();
-  }
   const lines: TextLine[] = [];
-  for (let i = 0; i < parts.length; i += 2) {
-    const content = parts[i] ?? "";
-    const eol = (parts[i + 1] as LineEol | undefined) ?? "";
-    lines.push({ text: content, eol });
+  const len = text.length;
+  let start = 0;
+  let pos = 0;
+
+  while (pos < len) {
+    const ch = text.charCodeAt(pos);
+    if (ch === 10) {
+      // \n
+      lines.push({ text: text.slice(start, pos), eol: "\n" });
+      pos++;
+      start = pos;
+    } else if (ch === 13) {
+      // \r or \r\n
+      if (pos + 1 < len && text.charCodeAt(pos + 1) === 10) {
+        lines.push({ text: text.slice(start, pos), eol: "\r\n" });
+        pos += 2;
+        start = pos;
+      } else {
+        lines.push({ text: text.slice(start, pos), eol: "\r" });
+        pos++;
+        start = pos;
+      }
+    } else {
+      pos++;
+    }
   }
+
+  if (start < len) {
+    lines.push({ text: text.slice(start), eol: "" });
+  }
+
   return lines;
 }
 

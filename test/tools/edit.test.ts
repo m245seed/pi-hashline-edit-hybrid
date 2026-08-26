@@ -7,6 +7,7 @@ import { resetServed } from "../../src/served/ledger";
 import { buildEditToolDef } from "../../src/tools/edit";
 import { buildReadToolDef } from "../../src/tools/read";
 import { ANCHOR_RE } from "../../src/anchors/alphabet";
+import { getLargeEditGuard, setLargeEditGuard } from "../../src/constants";
 
 const editTool = buildEditToolDef();
 const readTool = buildReadToolDef();
@@ -405,5 +406,17 @@ describe("edit tool option warnings", () => {
     );
     expect(result.isError).toBeFalsy();
     expect(readFileAt(joinPath(dir, "a.ts"))).toBe("one\nTWO");
+  });
+});
+
+describe("large edit guard configuration", () => {
+  it("allows reading and updating the guard thresholds", () => {
+    const initial = getLargeEditGuard();
+    expect(initial.minRemovedLines).toBe(20);
+    expect(initial.removedRatio).toBe(3);
+    setLargeEditGuard({ minRemovedLines: 30 });
+    expect(getLargeEditGuard().minRemovedLines).toBe(30);
+    setLargeEditGuard({ minRemovedLines: 20 });
+    expect(getLargeEditGuard().minRemovedLines).toBe(20);
   });
 });

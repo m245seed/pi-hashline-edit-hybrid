@@ -45,4 +45,8 @@ export const WARNING_CODES = [
   "W_STATE_RECOVERED",
   "W_ANCHOR_SPACE_PRESSURE",
   "W_UNUSED_OPTION",
+  "W_SERVED_WINDOW_EXCEEDED",
 ] as const;
+
+/** Alias for E_DISPLAY_LIKE_CONTENT for backward compatibility. */
+export const E_SUSPICIOUS_PATCH = "E_DISPLAY_LIKE_CONTENT";

@@ -15,11 +15,12 @@
  * returns a bounded anchored preview (PH-WRITE-002).
  */
 
+import { HASHLINE_PROTOCOL_ID } from "../integration/protocol";
 import { stat as fsStat } from "fs/promises";
-import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { toCwd } from "../paths";
-import { abortIf, errCode, sha256Hex } from "../utils";
+import { abortIf, debugLog, errCode, isRec, rejectUnknownFields, sha256Hex } from "../utils";
 import { withFileMutationQueue } from "../filesystem/concurrency";
 import { resolveTarget } from "../filesystem/resolve-target";
 import {
@@ -38,8 +39,9 @@ import {
   newTransactionIdFor,
   anchorSpaceWarning,
 } from "../mutation/transaction";
+import { suspiciousContentCheck, WRITE_ROOT_KEYS } from "../mutation/validate";
 import { checkRangeServed, formatRangeFailure } from "../served/authorize";
-import { pruneServedPath, serveLines } from "../served/ledger";
+import { pruneServedPath, serveLines, servedWindowNotice } from "../served/ledger";
 import { renderLinesBounded } from "../render/hashline";
 import { hashlineDetails } from "../render/result-details";
 import { isFrozen, frozenRejection } from "../integration/freeze";
@@ -58,6 +60,7 @@ export interface WriteToolDetails {
   hashline: ReturnType<typeof hashlineDetails>;
 }
 
+// Authoritative checks in src/mutation/validate.ts
 const writeSchema = Type.Object(
   {
     path: Type.String({ description: "Path of the file to write" }),
@@ -71,6 +74,12 @@ const writeSchema = Type.Object(
           "When true, overwrite an existing file without requiring full-file read authorization. High-risk: the previous content is replaced wholesale.",
       }),
     ),
+    allow_display_like_content: Type.Optional(
+      Type.Boolean({
+        description:
+          "When true, write content that looks like pasted hashline display output (ANCHOR│... rows) literally instead of rejecting it with E_DISPLAY_LIKE_CONTENT.",
+      }),
+    ),
     expected_revision: Type.Optional(
       Type.String({
         description:
@@ -80,11 +89,10 @@ const writeSchema = Type.Object(
   },
   {
     additionalProperties: false,
-    $id: "pi-hashline/write@1",
   },
 );
 
-const W_DESC = `Protocol-ID: pi-hashline/1 (anchor width 4). Write the complete content of a file atomically. Creating a NEW file is permitted. Overwriting an EXISTING file requires that you have already read the entire file in this session (so you know what you are replacing), or the explicit high-risk flag replace_existing=true. Returns a bounded anchored preview of the written file.`;
+const W_DESC = `Protocol-ID: ${HASHLINE_PROTOCOL_ID} (anchor width 4). Write the complete content of a file atomically. Creating a NEW file is permitted. Overwriting an EXISTING file requires that you have already read the entire file in this session (so you know what you are replacing), or the explicit high-risk flag replace_existing=true. Returns a bounded anchored preview of the written file.`;
 
 const W_SNIPPET =
   "write: atomically create or fully replace a file; overwriting an existing file requires full-file read authorization or replace_existing=true.";
@@ -92,6 +100,7 @@ const W_SNIPPET =
 const W_GUIDELINES = [
   "Prefer edit/insert for partial changes; write replaces the whole file and discards any lines you omit.",
   "Only overwrite a file you have fully read this session, or pass replace_existing=true deliberately.",
+  "Content resembling pasted hashline output is rejected with E_DISPLAY_LIKE_CONTENT; pass allow_display_like_content: true only for genuinely literal content.",
 ];
 
 const LONE_SURROGATE_RE =
@@ -121,7 +130,11 @@ export function buildWriteToolDef(): ToolDefinition<any, WriteToolDetails> {
 
     async execute(toolCallId, rawParams, signal, _onUpdate, ctx) {
       const params = rawParams as Record<string, unknown>;
-      if (typeof params?.path !== "string" || params.path.length === 0) {
+      if (!isRec(params)) {
+        throw new Error('[E_BAD_SHAPE] write parameters must be an object.');
+      }
+      rejectUnknownFields(params, WRITE_ROOT_KEYS, "write request");
+      if (typeof params.path !== "string" || params.path.length === 0) {
         throw new Error('[E_BAD_SHAPE] A non-empty "path" string is required.');
       }
       if (typeof params.content !== "string") {
@@ -132,6 +145,12 @@ export function buildWriteToolDef(): ToolDefinition<any, WriteToolDetails> {
         typeof params.replace_existing !== "boolean"
       ) {
         throw new Error('[E_BAD_SHAPE] "replace_existing" must be a boolean.');
+      }
+      if (
+        params.allow_display_like_content !== undefined &&
+        typeof params.allow_display_like_content !== "boolean"
+      ) {
+        throw new Error('[E_BAD_SHAPE] "allow_display_like_content" must be a boolean.');
       }
       if (
         params.expected_revision !== undefined &&
@@ -145,6 +164,7 @@ export function buildWriteToolDef(): ToolDefinition<any, WriteToolDetails> {
       const content = params.content;
       const replaceExisting = params.replace_existing === true;
       const expectedRevision = params.expected_revision as string | undefined;
+      const allowDisplayLike = params.allow_display_like_content === true;
 
       const absolutePath = toCwd(requestPath, ctx.cwd);
       const mutationTargetPath = await resolveTarget(absolutePath);
@@ -158,6 +178,7 @@ export function buildWriteToolDef(): ToolDefinition<any, WriteToolDetails> {
           content,
           replaceExisting,
           expectedRevision,
+          allowDisplayLike,
           signal,
           trackBeforeSha: (sha) => {
             beforeSha = sha;
@@ -193,6 +214,7 @@ interface RunWriteInput {
   content: string;
   replaceExisting: boolean;
   expectedRevision?: string;
+  allowDisplayLike: boolean;
   signal?: AbortSignal;
   trackBeforeSha: (sha: string) => void;
 }
@@ -205,6 +227,7 @@ async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition
     content,
     replaceExisting,
     expectedRevision,
+    allowDisplayLike,
     signal,
     trackBeforeSha,
   } = input;
@@ -236,9 +259,14 @@ async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition
     const afterChecksum = sha256Hex(rawAfter);
     const newTexts = docAfter.lines.map((line) => line.text);
     const newFingerprints = fingerprintHexes(newTexts);
+    // Reject pasted hashline display output (spec §17): raw content containing
+    // anchor|text rows is almost certainly a copy-paste error. The
+    // allow_display_like_content escape hatch mirrors edit/insert.
+    for (const line of newTexts) {
+      suspiciousContentCheck(line, allowDisplayLike);
+    }
 
     abortIf(signal);
-
     // Does the target already exist?
     let isNew = false;
     try {
@@ -384,12 +412,15 @@ async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition
       previewEnd,
       AUTO_READ_MAX_BYTES,
     );
-    serveLines(mutationTargetPath, preview.served);
+    const evictedRows = serveLines(mutationTargetPath, preview.served);
     let previewText = preview.text;
     if (preview.truncated) {
       previewText += `\n\n[Preview truncated at the ${AUTO_READ_MAX_BYTES / 1024}KB budget. Use read to see more.]`;
     } else if (previewEnd < newTexts.length) {
       previewText += `\n\n[Showing the first ${previewEnd} lines of ${newTexts.length}. Use read to see more.]`;
+    }
+    if (evictedRows > 0) {
+      previewText += servedWindowNotice(evictedRows);
     }
 
     emitMutationAfter(
@@ -409,6 +440,7 @@ async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition
           .filter((c): c is string => Boolean(c)),
       }),
     );
+    debugLog("write committed", { path: mutationTargetPath, warnings });
 
     const heading = isNew
       ? `Created ${requestPath} (${newTexts.length} line(s)).`
@@ -433,8 +465,4 @@ async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition
       },
     };
   });
-}
-
-export function registerWriteTool(pi: ExtensionAPI): void {
-  pi.registerTool(buildWriteToolDef());
 }

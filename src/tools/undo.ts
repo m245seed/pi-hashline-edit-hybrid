@@ -12,12 +12,12 @@
  * Undo history and file identity are independent of the context epoch
  * (PH-CONTEXT-005): undo works regardless of epoch advances.
  */
-
 import { readFile } from "fs/promises";
-import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { HASHLINE_PROTOCOL_ID } from "../integration/protocol";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { toCwd } from "../paths";
-import { abortIf, errCode, sha256Hex } from "../utils";
+import { abortIf, errCode, isRec, rejectUnknownFields, sha256Hex } from "../utils";
 import { withFileMutationQueue } from "../filesystem/concurrency";
 import { resolveTarget } from "../filesystem/resolve-target";
 import { loadStore } from "../state/database";
@@ -32,7 +32,8 @@ import { renderDiff } from "../render/diff";
 import { hashlineDetails } from "../render/result-details";
 import { isFrozen, frozenRejection } from "../integration/freeze";
 import { emitUndoAfter } from "../integration/ipc";
-import type { MutationMetrics } from "./edit";
+import type { MutationMetrics } from "./mutation-types";
+const UNDO_ROOT_KEYS = new Set(["path"]);
 
 export interface UndoToolDetails {
   diff?: string;
@@ -46,11 +47,10 @@ const undoSchema = Type.Object(
   },
   {
     additionalProperties: false,
-    $id: "pi-hashline/undo@1",
   },
 );
 
-const U_DESC = `Protocol-ID: pi-hashline/1 (anchor width 4). Revert the last successful hybrid transaction on one file — if one call changed five ranges, undo restores all five together. The file must still match the state produced by that transaction; if it was modified afterwards, undo fails without overwriting anything. Undo restores exact bytes and exact anchors.`;
+const U_DESC = `Protocol-ID: ${HASHLINE_PROTOCOL_ID} (anchor width 4). Revert the last successful hybrid transaction on one file — if one call changed five ranges, undo restores all five together. The file must still match the state produced by that transaction; if it was modified afterwards, undo fails without overwriting anything. Undo restores exact bytes and exact anchors.`;
 
 const U_SNIPPET =
   "undo: revert the last hybrid transaction on a file; fails (E_UNDO_STALE) if the file changed since, so it never destroys later work.";
@@ -66,10 +66,14 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
 
     async execute(toolCallId, rawParams, signal, _onUpdate, ctx) {
       const params = rawParams as Record<string, unknown>;
+      if (!isRec(params)) {
+        throw new Error('[E_BAD_SHAPE] undo parameters must be an object.');
+      }
+      rejectUnknownFields(params, UNDO_ROOT_KEYS, "undo request");
       if (typeof params?.path !== "string" || params.path.length === 0) {
         throw new Error('[E_BAD_SHAPE] A non-empty "path" string is required.');
       }
-      const requestPath = params.path;
+      const requestPath = params.path as string;
       const absolutePath = toCwd(requestPath, ctx.cwd);
       const mutationTargetPath = await resolveTarget(absolutePath);
 
@@ -253,8 +257,4 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
       });
     },
   };
-}
-
-export function registerUndoTool(pi: ExtensionAPI): void {
-  pi.registerTool(buildUndoToolDef());
 }

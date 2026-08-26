@@ -93,6 +93,7 @@ export function renderLinesBounded(
     }
     candidates.push({
       rendered: formatDisplayRow(anchor, text),
+      renderedBytes: bytes + 7,
       servable: { anchor, exactText: text, lineIndex: line },
     });
   }

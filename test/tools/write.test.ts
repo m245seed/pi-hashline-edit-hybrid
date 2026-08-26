@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { existsSync } from "fs";
 import { join } from "path";
 import { withStateDir } from "../support/env";
 import {
@@ -180,5 +181,24 @@ describe("write tool (spec §31.8, PH-WRITE-001..003)", () => {
     await expect(
       runTool(writeTool, { path: "missing-dir/new.ts", content: "x\n" }, dir),
     ).rejects.toThrow(/E_ATOMIC_REPLACE_FAILED/);
+  });
+
+  it("rejects display-like content with E_DISPLAY_LIKE_CONTENT and writes nothing", async () => {
+    const dir = makeProject();
+    await expect(
+      runTool(writeTool, { path: "notes.md", content: "plain\nAb31│pasted row\n" }, dir),
+    ).rejects.toThrow(/E_DISPLAY_LIKE_CONTENT/);
+    expect(existsSync(join(dir, "notes.md"))).toBe(false);
+  });
+
+  it("writes display-like content literally with allow_display_like_content", async () => {
+    const dir = makeProject();
+    const result = await runTool(
+      writeTool,
+      { path: "notes.md", content: "Ab31│literal row\nplain\n", allow_display_like_content: true },
+      dir,
+    );
+    expect(result.isError).toBeFalsy();
+    expect(readFileAt(join(dir, "notes.md"))).toBe("Ab31│literal row\nplain\n");
   });
 });

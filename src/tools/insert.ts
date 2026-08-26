@@ -7,10 +7,10 @@
  * transactional; same anchor + direction keep request order.
  */
 
-import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { toCwd } from "../paths";
-import { abortIf, sha256Hex } from "../utils";
+import { abortIf, debugLog, sha256Hex } from "../utils";
 import { withFileMutationQueue } from "../filesystem/concurrency";
 import { resolveTarget } from "../filesystem/resolve-target";
 import { validateInsertRequest } from "../mutation/validate";
@@ -31,9 +31,6 @@ import {
   mixedEndingsWarning,
   newTransactionIdFor,
 } from "../mutation/transaction";
-import { servedEntry, serveLines, isStale } from "../served/ledger";
-import { getContextEpoch } from "../served/epoch";
-import { formatDisplayRow } from "../render/hashline";
 import { renderDiff } from "../render/diff";
 import { hashlineDetails } from "../render/result-details";
 import { isFrozen, frozenRejection } from "../integration/freeze";
@@ -43,17 +40,21 @@ import {
   emitMutationRejected,
   mutationEventBase,
 } from "../integration/ipc";
+import { HASHLINE_PROTOCOL_ID } from "../integration/protocol";
 import { fingerprintHexes } from "../anchors/fingerprints";
 import { MAX_FEEDBACK_LINES, MAX_DISPLAY_LINE_BYTES } from "../constants";
 import { formatSize } from "../utils";
-import type { MutationMetrics } from "./edit";
-
+import { checkRangeServed, formatRangeFailure } from "../served/authorize";
+import type { MutationMetrics } from "./mutation-types";
 export interface InsertToolDetails {
+  /** Rendered anchored diff text (same content as the text response);
+   * omitted for no-op transactions, which produce no diff. */
   diff?: string;
   metrics: MutationMetrics;
   hashline: ReturnType<typeof hashlineDetails>;
 }
 
+// Authoritative checks in src/mutation/validate.ts
 const insertSchema = Type.Object(
   {
     path: Type.String({ description: "Path to the file to modify" }),
@@ -61,6 +62,7 @@ const insertSchema = Type.Object(
       Type.Object(
         {
           anchor: Type.String({
+            pattern: "^[A-Za-z0-9]{4}$",
             description:
               "Bare 4-character anchor of the line to insert around; the anchor line itself is preserved.",
           }),
@@ -88,11 +90,10 @@ const insertSchema = Type.Object(
   },
   {
     additionalProperties: false,
-    $id: "pi-hashline/insert@1",
   },
 );
 
-const I_DESC = `Protocol-ID: pi-hashline/1 (anchor width 4). Insert literal lines before or after a single anchor line in one file. The anchor line itself is preserved and must have been shown to you in this session with exactly its current content. Multiple inserts in one call are validated together and committed as one transaction.`;
+const I_DESC = `Protocol-ID: ${HASHLINE_PROTOCOL_ID} (anchor width 4). Insert literal lines before or after a single anchor line in one file. The anchor line itself is preserved and must have been shown to you in this session with exactly its current content. Multiple inserts in one call are validated together and committed as one transaction.`;
 
 const I_SNIPPET =
   "insert: add lines before/after an anchored line; the anchor line must have been shown and must still match; multiple inserts commit atomically.";
@@ -102,40 +103,6 @@ const I_GUIDELINES = [
   "Inserted lines are literal: never include rendered `ANCHOR│` prefixes or diff markers.",
   "Do not repeat the anchor line's own content in `lines`.",
 ];
-
-function insertAuthMessage(
-  path: string,
-  realPath: string,
-  anchor: string,
-  lineIndex: number,
-  anchors: readonly string[],
-  texts: readonly string[],
-  stale: boolean,
-): string {
-  const fresh: string[] = [];
-  const served: Array<{ anchor: string; exactText: string; lineIndex: number }> = [];
-  const start = Math.max(0, lineIndex - 2);
-  const end = Math.min(texts.length, start + MAX_FEEDBACK_LINES);
-  for (let line = start; line < end; line++) {
-    const text = texts[line]!;
-    const bytes = Buffer.byteLength(text, "utf-8");
-    if (bytes > MAX_DISPLAY_LINE_BYTES) {
-      // PH-OUTPUT-008: feedback never bypasses oversized-line protections.
-      fresh.push(
-        `[Line ${line + 1} omitted: ${formatSize(bytes)}. Not authorized for edits.]`,
-      );
-      continue;
-    }
-    served.push({ anchor: anchors[line]!, exactText: text, lineIndex: line });
-    fresh.push(formatDisplayRow(anchors[line]!, text));
-  }
-  serveLines(realPath, served);
-  const code = stale ? "E_RANGE_STALE" : "E_ANCHOR_NOT_SERVED";
-  const detail = stale
-    ? `The anchor line "${anchor}" (line ${lineIndex + 1}) in ${path} no longer contains the content you saw.`
-    : `The anchor line "${anchor}" (line ${lineIndex + 1}) in ${path} was not shown in this session.`;
-  return `[${code}] ${detail} Nothing was modified.\n\nCurrent context with fresh anchors:\n${fresh.join("\n")}`;
-}
 
 export function buildInsertToolDef(): ToolDefinition<any, InsertToolDetails> {
   return {
@@ -205,7 +172,6 @@ async function runInsert(input: RunInsertInput): Promise<ReturnType<ToolDefiniti
     const file = await loadAnchoredFile(mutationTargetPath, request.path);
     trackBeforeSha(file.checksum);
     const anchorIndex = buildAnchorIndex(file.anchors);
-    const epoch = getContextEpoch();
 
     const ops: InsertOp[] = [];
     for (let i = 0; i < request.inserts.length; i++) {
@@ -221,51 +187,10 @@ async function runInsert(input: RunInsertInput): Promise<ReturnType<ToolDefiniti
           ),
         );
       }
-      const entry = servedEntry(mutationTargetPath, item.anchor);
-      if (entry === undefined) {
-        // Shown-but-changed anchors are stale, not merely unseen (§71).
-        if (isStale(mutationTargetPath, item.anchor)) {
-          throw new Error(
-            insertAuthMessage(
-              request.path,
-              mutationTargetPath,
-              item.anchor,
-              idx,
-              file.anchors,
-              file.texts,
-              true,
-            ),
-          );
-        }
+      const check = checkRangeServed(mutationTargetPath, file.anchors, file.texts, idx, idx);
+      if (!check.ok) {
         throw new Error(
-          insertAuthMessage(
-            request.path,
-            mutationTargetPath,
-            item.anchor,
-            idx,
-            file.anchors,
-            file.texts,
-            false,
-          ),
-        );
-      }
-      if (entry.exactText !== file.texts[idx]) {
-        throw new Error(
-          insertAuthMessage(
-            request.path,
-            mutationTargetPath,
-            item.anchor,
-            idx,
-            file.anchors,
-            file.texts,
-            true,
-          ),
-        );
-      }
-      if (entry.epoch < epoch) {
-        // PH-CONTEXT-003/004: older-epoch authorization has expired.
-        throw new Error(
-          `[E_CONTEXT_EPOCH_STALE] The anchor line "${item.anchor}" (line ${idx + 1}) in ${request.path} was shown before the context was rebuilt; its authorization has expired. Nothing was modified. Re-read the line to re-authorize it in the current context epoch.`,
+          formatRangeFailure(request.path, mutationTargetPath, file.anchors, file.texts, idx, idx, check),
         );
       }
       ops.push({
@@ -402,6 +327,7 @@ async function runInsert(input: RunInsertInput): Promise<ReturnType<ToolDefiniti
           .filter((c): c is string => Boolean(c)),
       }),
     );
+    debugLog("insert committed", { path: mutationTargetPath, metrics, warnings });
 
     return {
       content: [{ type: "text", text }],
@@ -419,8 +345,4 @@ async function runInsert(input: RunInsertInput): Promise<ReturnType<ToolDefiniti
       },
     };
   });
-}
-
-export function registerInsertTool(pi: ExtensionAPI): void {
-  pi.registerTool(buildInsertToolDef());
 }

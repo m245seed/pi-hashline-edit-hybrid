@@ -25,7 +25,7 @@
 import { MAX_FEEDBACK_LINES, MAX_DISPLAY_LINE_BYTES } from "../constants";
 import { HASH_SEP } from "../anchors/alphabet";
 import { formatSize } from "../utils";
-import { servedEntry, serveLines, isStale } from "./ledger";
+import { getLedger, getStaleSet, serveLines } from "./ledger";
 import { getContextEpoch } from "./epoch";
 
 export interface RangeCheck {
@@ -49,14 +49,17 @@ export function checkRangeServed(
   const stale: number[] = [];
   const epochStale: number[] = [];
   const epoch = getContextEpoch();
+  // Hoist per-file lookups outside loop (was O(N) map lookups per line via servedEntry/isStale)
+  const fileLedger = getLedger().get(path);
+  const staleSet = getStaleSet(path);
   for (let line = startLine; line <= endLine; line++) {
     const anchor = anchors[line]!;
     const text = texts[line]!;
-    const entry = servedEntry(path, anchor);
+    const entry = fileLedger?.get(anchor);
     if (entry === undefined) {
       // A line that was shown and then changed externally is stale, not
       // merely unseen (spec §71).
-      if (isStale(path, anchor)) {
+      if (staleSet?.has(anchor)) {
         stale.push(line);
       } else {
         unserved.push(line);

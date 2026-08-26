@@ -51,14 +51,27 @@ export function reconcileState(
   const mapping = new Map<number, number>();
 
   if (oldState && oldState.anchors.length === oldState.fingerprints.length) {
-    const alignment = alignSequences(oldState.fingerprints, newFingerprints);
+    // Convert hex fingerprints to dense integer IDs so Myers diff compares
+    // numbers (O(1) ===) instead of 64-char strings (O(64) char loop).
+    const idByHex = new Map<string, number>();
+    let nextId = 1;
+    const toId = (hex: string): number => {
+      let id = idByHex.get(hex);
+      if (id === undefined) {
+        id = nextId++;
+        idByHex.set(hex, id);
+      }
+      return id;
+    };
+    const oldIds = oldState.fingerprints.map(toId);
+    const newIds = newFingerprints.map(toId);
+    const alignment = alignSequences(oldIds, newIds);
     for (const [newIdx, oldIdx] of alignment) {
       anchors[newIdx] = oldState.anchors[oldIdx]!;
       preservedOld.add(oldIdx);
       mapping.set(newIdx, oldIdx);
     }
   }
-
   for (let i = 0; i < newTexts.length; i++) {
     if (anchors[i] !== undefined) continue;
     anchors[i] = allocator.allocate(newTexts[i]!);

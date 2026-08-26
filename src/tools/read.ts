@@ -9,17 +9,19 @@
  * `expected_revision` CAS mode.
  */
 
-import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { toCwd } from "../paths";
-import { abortIf } from "../utils";
+import { abortIf, isRec, normPosInt, rejectUnknownFields } from "../utils";
 import { DEFAULT_READ_LIMIT, READ_MAX_OUTPUT_BYTES } from "../constants";
+import { HASHLINE_PROTOCOL_ID } from "../integration/protocol";
 import { resolveTarget } from "../filesystem/resolve-target";
 import { loadAnchoredFile } from "../mutation/transaction";
 import { renderLinesBounded } from "../render/hashline";
-import { serveLines } from "../served/ledger";
+import { serveLines, servedWindowNotice } from "../served/ledger";
 import { hashlineDetails } from "../render/result-details";
 
+const READ_ROOT_KEYS = new Set(["path", "offset", "limit"]);
 export interface ReadToolDetails {
   revision: string;
   totalLines: number;
@@ -40,11 +42,9 @@ const readSchema = Type.Object(
   },
   {
     additionalProperties: false,
-    $id: "pi-hashline/read@1",
   },
 );
-
-const R_DESC = `Protocol-ID: pi-hashline/1 (anchor width 4). Read a text file with stable 4-character hash anchors. Every returned row is \`anchor│content\`; the anchors are edit-ready — use them with edit, insert, and grep without re-reading. Output is paged: without \`limit\`, at most ${DEFAULT_READ_LIMIT} lines are returned (use \`offset\` to continue). Lines too large to display are omitted with a note and are not editable until inspected.`;
+const R_DESC = `Protocol-ID: ${HASHLINE_PROTOCOL_ID} (anchor width 4). Read a text file with stable 4-character hash anchors. Every returned row is \`anchor│content\`; the anchors are edit-ready — use them with edit, insert, and grep without re-reading. Output is paged: without \`limit\`, at most ${DEFAULT_READ_LIMIT} lines are returned (use \`offset\` to continue). Lines too large to display are omitted with a note and are not editable until inspected.`;
 
 const R_SNIPPET =
   "read: return file lines with stable `ANCHOR│content` rows; anchors are edit-ready and become authorized for destructive edits.";
@@ -53,14 +53,6 @@ const R_GUIDELINES = [
   "Only lines actually shown in a tool result become editable; after a session restart, re-read before editing.",
   "Use offset/limit for paging; the returned anchors stay valid across pagination.",
 ];
-
-function normPosInt(value: unknown, name: string): number | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw new Error(`[E_BAD_SHAPE] Read request field "${name}" must be a positive integer.`);
-  }
-  return value;
-}
 
 export function buildReadToolDef(): ToolDefinition<any, ReadToolDetails> {
   return {
@@ -74,6 +66,10 @@ export function buildReadToolDef(): ToolDefinition<any, ReadToolDetails> {
 
     async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
       const params = rawParams as Record<string, unknown>;
+      if (!isRec(params)) {
+        throw new Error('[E_BAD_SHAPE] read parameters must be an object.');
+      }
+      rejectUnknownFields(params, READ_ROOT_KEYS, "read request");
       if (typeof params?.path !== "string" || params.path.length === 0) {
         throw new Error('[E_BAD_SHAPE] A non-empty "path" string is required.');
       }
@@ -112,7 +108,7 @@ export function buildReadToolDef(): ToolDefinition<any, ReadToolDetails> {
       const start = (offset ?? 1) - 1;
       const end = Math.min(start + (limit ?? DEFAULT_READ_LIMIT), total);
       const bounded = renderLinesBounded(file.anchors, file.texts, start, end);
-      serveLines(realPath, bounded.served);
+      const evictedRows = serveLines(realPath, bounded.served);
 
       let output = bounded.text;
       let nextOffset: number | undefined;
@@ -128,6 +124,9 @@ export function buildReadToolDef(): ToolDefinition<any, ReadToolDetails> {
         output += `\n\n[Showing lines ${start + 1}-${end} of ${total}. Use offset=${nextOffset} to continue.]`;
       } else if (total > 1) {
         output += `\n\n[Showing lines ${start + 1}-${end} of ${total}.]`;
+      }
+      if (evictedRows > 0) {
+        output += servedWindowNotice(evictedRows);
       }
 
       return {
@@ -147,8 +146,4 @@ export function buildReadToolDef(): ToolDefinition<any, ReadToolDetails> {
       };
     },
   };
-}
-
-export function registerReadTool(pi: ExtensionAPI): void {
-  pi.registerTool(buildReadToolDef());
 }

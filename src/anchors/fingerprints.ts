@@ -21,9 +21,14 @@ export function decodeFingerprintHexes(blob: Uint8Array): string[] {
   if (blob.length % FINGERPRINT_BYTES !== 0) {
     throw new Error("Corrupt fingerprint blob length");
   }
-  const out: string[] = [];
-  for (let i = 0; i < blob.length; i += FINGERPRINT_BYTES) {
-    out.push(Buffer.from(blob.subarray(i, i + FINGERPRINT_BYTES)).toString("hex"));
+  const buf = Buffer.isBuffer(blob)
+    ? blob
+    : Buffer.from(blob.buffer, blob.byteOffset, blob.byteLength);
+  const count = blob.length / FINGERPRINT_BYTES;
+  const out = new Array<string>(count);
+  for (let i = 0; i < count; i++) {
+    const offset = i * FINGERPRINT_BYTES;
+    out[i] = buf.toString("hex", offset, offset + FINGERPRINT_BYTES);
   }
   return out;
 }
