@@ -17,7 +17,6 @@
 import { HASH_SEP } from "../anchors/alphabet";
 import { DIFF_MAX_OUTPUT_BYTES, MAX_DISPLAY_LINE_BYTES } from "../constants";
 import { formatSize } from "../utils";
-import { serveLines, servedWindowNotice } from "../served/ledger";
 import { applyOutputBudget, type CandidateRow } from "./budget";
 import type { DiffRow } from "../mutation/apply";
 
@@ -44,7 +43,7 @@ function omittedRemovedRow(bytes: number): string {
   return `[removed diff row omitted: ${formatSize(bytes)}]`;
 }
 
-export function renderDiff(path: string, rows: DiffRow[]): RenderedDiff {
+export function renderDiff(rows: DiffRow[]): RenderedDiff {
   const candidates: CandidateRow[] = [];
   for (const row of rows) {
     const bytes = Buffer.byteLength(row.text, "utf-8");
@@ -82,9 +81,7 @@ export function renderDiff(path: string, rows: DiffRow[]): RenderedDiff {
   const output = budgeted.truncated
     ? [...budgeted.rows, `[diff output truncated: ${budgeted.dropped} more row(s) were omitted to stay within the ${formatSize(DIFF_MAX_OUTPUT_BYTES)} output budget. Omitted rows are not authorized for edits; use read to view them.]`]
     : budgeted.rows;
-  const evictedRows = serveLines(path, budgeted.served);
-  let text = output.join("\n");
-  if (evictedRows > 0) text += servedWindowNotice(evictedRows);
+  const text = output.join("\n");
   return {
     text,
     served: budgeted.served,

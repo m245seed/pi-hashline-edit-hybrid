@@ -19,7 +19,7 @@ import { decodeDocument, encodeDocument } from "../document/decode";
 import { assertFileKind, assertLineCount, checkFileKind } from "../document/file-kind";
 import { hasMixedLineEndings, type Document, type TextLine } from "../document/lines";
 import { reconcileServed } from "../served/ledger";
-import { loadStore, requireStore, withBusyRetry } from "../state/database";
+import { cachedPrepare, loadStore, requireStore, withBusyRetry } from "../state/database";
 import {
   getSnapshot,
   putSnapshot,
@@ -320,9 +320,9 @@ export async function commitMutation(input: CommitInput): Promise<void> {
     if (!fileCommitted) {
       try {
         withBusyRetry(() =>
-          requireStore()
-            .db.prepare(`DELETE FROM pending_transactions WHERE transaction_id = ?`)
-            .run(transactionId),
+          cachedPrepare(`DELETE FROM pending_transactions WHERE transaction_id = ?`).run(
+            transactionId,
+          ),
         );
       } catch {}
       throw error;

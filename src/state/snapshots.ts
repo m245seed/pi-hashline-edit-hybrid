@@ -9,7 +9,7 @@
 
 import { ANCHOR_RE, anchorToIdx, idxToAnchor } from "../anchors/alphabet";
 import { FINGERPRINT_BYTES, decodeFingerprintHexes } from "../anchors/fingerprints";
-import { requireStore, withBusyRetry, withTransaction, type Store } from "./database";
+import { cachedPrepare, prepareCached, requireStore, withBusyRetry, withTransaction, type Store } from "./database";
 
 export interface FileSnapshot {
   path: string;
@@ -147,20 +147,17 @@ function rowToSnapshot(row: FilesRow): FileSnapshot {
  * instead of permanently breaking that file.
  */
 export function getSnapshot(store: Store, path: string): FileSnapshot | undefined {
-  const row = store.db
-    .prepare(
-      `SELECT path, raw_checksum, line_count, anchor_epoch, anchors, fingerprints, retired, updated_at FROM files WHERE path = ?`,
-    )
-    .get(path) as FilesRow | undefined;
+  const row = prepareCached(
+    store,
+    `SELECT path, raw_checksum, line_count, anchor_epoch, anchors, fingerprints, retired, updated_at FROM files WHERE path = ?`,
+  ).get(path) as FilesRow | undefined;
   if (!row) return undefined;
   try {
     return rowToSnapshot(row);
   } catch (error) {
     console.error(`Hashline snapshot for ${path} is corrupt; rebuilding from disk:`, error);
     try {
-      withBusyRetry(() =>
-        store.db.prepare(`DELETE FROM files WHERE path = ?`).run(path),
-      );
+      withBusyRetry(() => prepareCached(store, `DELETE FROM files WHERE path = ?`).run(path));
     } catch {}
     return undefined;
   }
@@ -168,9 +165,9 @@ export function getSnapshot(store: Store, path: string): FileSnapshot | undefine
 
 export function putSnapshot(store: Store, path: string, snapshot: FileSnapshot): void {
   withBusyRetry(() =>
-    store.db
-      .prepare(
-        `INSERT INTO files (path, raw_checksum, line_count, anchor_epoch, anchors, fingerprints, retired, updated_at)
+    prepareCached(
+      store,
+      `INSERT INTO files (path, raw_checksum, line_count, anchor_epoch, anchors, fingerprints, retired, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(path) DO UPDATE SET
            raw_checksum = excluded.raw_checksum,
@@ -180,8 +177,7 @@ export function putSnapshot(store: Store, path: string, snapshot: FileSnapshot):
            fingerprints = excluded.fingerprints,
            retired = excluded.retired,
            updated_at = excluded.updated_at`,
-      )
-      .run(
+    ).run(
         snapshot.path,
         snapshot.rawChecksum,
         snapshot.lineCount,
@@ -195,7 +191,7 @@ export function putSnapshot(store: Store, path: string, snapshot: FileSnapshot):
 }
 
 export function deleteSnapshot(store: Store, path: string): void {
-  withBusyRetry(() => store.db.prepare(`DELETE FROM files WHERE path = ?`).run(path));
+  withBusyRetry(() => prepareCached(store, `DELETE FROM files WHERE path = ?`).run(path));
 }
 
 /**
@@ -213,9 +209,8 @@ export function finalizeTransaction(opts: {
   withTransaction(() => {
     const store = requireStore();
     // Inline snapshot upsert without inner withBusyRetry; outer transaction handles retries.
-    store.db
-      .prepare(
-        `INSERT INTO files (path, raw_checksum, line_count, anchor_epoch, anchors, fingerprints, retired, updated_at)
+    cachedPrepare(
+      `INSERT INTO files (path, raw_checksum, line_count, anchor_epoch, anchors, fingerprints, retired, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(path) DO UPDATE SET
            raw_checksum = excluded.raw_checksum,
@@ -225,8 +220,7 @@ export function finalizeTransaction(opts: {
            fingerprints = excluded.fingerprints,
            retired = excluded.retired,
            updated_at = excluded.updated_at`,
-      )
-      .run(
+    ).run(
         opts.snapshot.path,
         opts.snapshot.rawChecksum,
         opts.snapshot.lineCount,
@@ -239,18 +233,18 @@ export function finalizeTransaction(opts: {
     if (opts.undoPayload) {
       upsertUndoRow(store, opts.undoPayload);
     } else {
-      store.db.prepare(`DELETE FROM undo WHERE path = ?`).run(opts.snapshot.path);
+      cachedPrepare(`DELETE FROM undo WHERE path = ?`).run(opts.snapshot.path);
     }
-    store.db
-      .prepare(`DELETE FROM pending_transactions WHERE transaction_id = ?`)
-      .run(opts.pendingTransactionId);
+    cachedPrepare(`DELETE FROM pending_transactions WHERE transaction_id = ?`).run(
+      opts.pendingTransactionId,
+    );
   });
 }
 
 export function upsertUndoRow(store: Store, payload: UndoPayload): void {
-  store.db
-    .prepare(
-      `INSERT INTO undo (path, transaction_id, before_bytes, after_checksum,
+  prepareCached(
+    store,
+    `INSERT INTO undo (path, transaction_id, before_bytes, after_checksum,
          before_anchors, before_fingerprints, before_retired,
          after_anchors, after_fingerprints, after_retired, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -265,8 +259,7 @@ export function upsertUndoRow(store: Store, payload: UndoPayload): void {
          after_fingerprints = excluded.after_fingerprints,
          after_retired = excluded.after_retired,
          created_at = excluded.created_at`,
-    )
-    .run(
+  ).run(
       payload.path,
       payload.transactionId,
       payload.beforeBytes,

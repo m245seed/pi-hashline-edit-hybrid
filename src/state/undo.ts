@@ -7,7 +7,7 @@
  * identity, not merely text (spec §35).
  */
 
-import { requireStore, withBusyRetry, type Store } from "./database";
+import { prepareCached, requireStore, withBusyRetry, type Store } from "./database";
 import {
   decodeAnchorsBlob,
   decodeFingerprintsBlob,
@@ -42,14 +42,13 @@ export interface UndoRecord {
 }
 
 export function getUndoRecord(store: Store, path: string): UndoRecord | undefined {
-  const row = store.db
-    .prepare(
-      `SELECT path, transaction_id, before_bytes, after_checksum,
+  const row = prepareCached(
+    store,
+    `SELECT path, transaction_id, before_bytes, after_checksum,
          before_anchors, before_fingerprints, before_retired,
          after_anchors, after_fingerprints, after_retired
        FROM undo WHERE path = ?`,
-    )
-    .get(path) as UndoRow | undefined;
+  ).get(path) as UndoRow | undefined;
   if (!row) return undefined;
   const beforeLineCount = row.before_anchors.length / 4;
   const afterLineCount = row.after_anchors.length / 4;
@@ -68,7 +67,7 @@ export function getUndoRecord(store: Store, path: string): UndoRecord | undefine
 }
 
 export function deleteUndoRecord(store: Store, path: string): void {
-  withBusyRetry(() => store.db.prepare(`DELETE FROM undo WHERE path = ?`).run(path));
+  withBusyRetry(() => prepareCached(store, `DELETE FROM undo WHERE path = ?`).run(path));
 }
 
 export function undoPayloadToRecord(payload: UndoPayload): UndoRecord {

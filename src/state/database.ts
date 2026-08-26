@@ -47,13 +47,62 @@ export class SchemaVersionError extends Error {
     this.name = "SchemaVersionError";
   }
 }
-
 let cachedDb: { path: string; db: DatabaseSync } | null = null;
 let opening: { path: string; promise: Promise<Store> } | null = null;
 let exitHandlerRegistered = false;
 
 // Reused SharedArrayBuffer for sync sleep to avoid per-retry allocation.
 const sleepSab = new Int32Array(new SharedArrayBuffer(4));
+
+// Prepared-statement cache: per-DB Map keyed by SQL text, LRU-bounded.
+// Node's DatabaseSync parses SQL on each prepare(); caching avoids repeated
+// parsing for the ~10 hot statements (snapshots, journal, undo, meta).
+const MAX_CACHED_PREPARED = 32;
+type PreparedStatement = any;
+const statementCache = new WeakMap<DatabaseSync, Map<string, PreparedStatement>>();
+
+export function prepareCached(store: Store, sql: string): PreparedStatement {
+  let cache = statementCache.get(store.db);
+  if (!cache) {
+    cache = new Map<string, PreparedStatement>();
+    statementCache.set(store.db, cache);
+  }
+  let stmt = cache.get(sql);
+  if (stmt) {
+    // Refresh LRU order
+    cache.delete(sql);
+    cache.set(sql, stmt);
+    return stmt;
+  }
+  stmt = store.db.prepare(sql);
+  cache.set(sql, stmt);
+  if (cache.size > MAX_CACHED_PREPARED) {
+    const oldestKey = cache.keys().next().value as string;
+    const oldest = cache.get(oldestKey)!;
+    cache.delete(oldestKey);
+    try {
+      (oldest as unknown as { finalize?: () => void }).finalize?.();
+    } catch {}
+  }
+  return stmt;
+}
+
+export function cachedPrepare(sql: string): PreparedStatement {
+  return prepareCached(requireStore(), sql);
+}
+
+function clearStatementCache(db: DatabaseSync): void {
+  const cache = statementCache.get(db);
+  if (cache) {
+    for (const stmt of cache.values()) {
+      try {
+        (stmt as unknown as { finalize?: () => void }).finalize?.();
+      } catch {}
+    }
+    cache.clear();
+    statementCache.delete(db);
+  }
+}
 
 export function isCorruptionError(error: unknown): boolean {
   if (error && typeof error === "object") {
@@ -116,6 +165,34 @@ export async function withBusyRetryAsync<T>(fn: () => T | Promise<T>): Promise<T
   throw lastError;
 }
 
+function getUserVersion(db: DatabaseSync): number {
+  try {
+    const row = db.prepare("PRAGMA user_version").get() as
+      | { user_version?: number }
+      | undefined;
+    return row?.user_version ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+function setUserVersion(db: DatabaseSync, version: number): void {
+  db.exec(`PRAGMA user_version = ${version}`);
+}
+
+type Migration = (db: DatabaseSync) => void;
+const MIGRATIONS: Record<number, Migration> = {
+  // Example: 2: (db) => db.exec("ALTER TABLE files ADD COLUMN new_col TEXT"),
+};
+
+function runMigrations(db: DatabaseSync, from: number, to: number): void {
+  for (let v = from + 1; v <= to; v++) {
+    const migrate = MIGRATIONS[v];
+    if (migrate) migrate(db);
+    setUserVersion(db, v);
+  }
+}
+
 function openDb(storePath: string): { db: DatabaseSync } {
   const db = new DatabaseSync(storePath, { timeout: DB_BUSY_TIMEOUT });
   try {
@@ -126,13 +203,29 @@ function openDb(storePath: string): { db: DatabaseSync } {
     db.exec(PENDING_TABLE);
     db.exec(META_TABLE);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_pending_created_at ON pending_transactions(created_at)`);
+    const userVersion = getUserVersion(db);
     const versionRow = db.prepare(`SELECT value FROM meta WHERE key = ?`).get(
       SCHEMA_KEY,
     ) as { value?: string } | undefined;
-    if (versionRow && versionRow.value !== String(SCHEMA_VERSION)) {
+    const legacyVersion = versionRow?.value ? parseInt(versionRow.value, 10) : 0;
+    const hasLegacy = versionRow?.value !== undefined;
+    if ((hasLegacy && Number.isNaN(legacyVersion)) || Number.isNaN(userVersion)) {
       throw new SchemaVersionError(
-        `[E_STATE_CORRUPT] Hashline state schema version ${versionRow.value} is unsupported (expected ${SCHEMA_VERSION}). The state store was not modified; upgrade or downgrade the extension, or remove the store to start fresh.`,
+        `[E_STATE_CORRUPT] Hashline state schema version ${versionRow?.value} is unsupported (expected ${SCHEMA_VERSION}). The state store was not modified; upgrade or downgrade the extension, or remove the store to start fresh.`,
       );
+    }
+    const effectiveVersion = Math.max(userVersion, legacyVersion);
+    if (effectiveVersion > SCHEMA_VERSION) {
+      throw new SchemaVersionError(
+        `[E_STATE_CORRUPT] Hashline state schema version ${effectiveVersion} is newer than supported ${SCHEMA_VERSION}. The state store was not modified; upgrade the extension or remove the store to start fresh.`,
+      );
+    }
+    if (effectiveVersion !== 0 && effectiveVersion < SCHEMA_VERSION) {
+      runMigrations(db, effectiveVersion, SCHEMA_VERSION);
+    } else if (effectiveVersion === 0) {
+      setUserVersion(db, SCHEMA_VERSION);
+    } else if (userVersion !== SCHEMA_VERSION) {
+      setUserVersion(db, SCHEMA_VERSION);
     }
     db.prepare(
       `INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -171,6 +264,7 @@ async function quarantineStore(storePath: string): Promise<void> {
 
 export function shutdownStore(): void {
   if (cachedDb) {
+    clearStatementCache(cachedDb.db);
     try {
       cachedDb.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
     } catch {}
@@ -180,7 +274,6 @@ export function shutdownStore(): void {
     cachedDb = null;
   }
 }
-
 async function openStore(storePath: string): Promise<Store> {
   shutdownStore();
   await mkdir(stateDir(), { recursive: true });

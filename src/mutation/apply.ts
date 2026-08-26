@@ -410,7 +410,56 @@ export function buildDiffRows(
   newAnchors: string[],
   contextLines = 2,
 ): DiffRow[] {
-  const parts = Diff.diffArrays(oldTexts as string[], newTexts as string[]);
+  // Trim identical prefix/suffix beyond context window to avoid O(N·D) on large
+  // files with small edits. Keep at most `contextLines` of the identical edge
+  // runs so the diff still has surrounding context.
+  let prefix = 0;
+  const maxPrefix = Math.min(oldTexts.length, newTexts.length);
+  while (prefix < maxPrefix && oldTexts[prefix] === newTexts[prefix]) prefix++;
+  let oldSuffix = oldTexts.length - 1;
+  let newSuffix = newTexts.length - 1;
+  while (
+    oldSuffix >= prefix &&
+    newSuffix >= prefix &&
+    oldTexts[oldSuffix] === newTexts[newSuffix]
+  ) {
+    oldSuffix--;
+    newSuffix--;
+  }
+  const suffixCount = oldTexts.length - 1 - oldSuffix;
+  const oldStart = Math.max(0, prefix - contextLines);
+  const newStart = Math.max(0, prefix - contextLines);
+  const oldEnd = oldTexts.length - Math.max(0, suffixCount - contextLines);
+  const newEnd = newTexts.length - Math.max(0, suffixCount - contextLines);
+  const oldMid = oldStart === 0 && oldEnd === oldTexts.length ? oldTexts : oldTexts.slice(oldStart, oldEnd);
+  const newMid = newStart === 0 && newEnd === newTexts.length ? newTexts : newTexts.slice(newStart, newEnd);
+  const oldAnchorsMid =
+    oldStart === 0 && oldEnd === oldAnchors.length ? oldAnchors : oldAnchors.slice(oldStart, oldEnd);
+  const newAnchorsMid =
+    newStart === 0 && newEnd === newAnchors.length ? newAnchors : newAnchors.slice(newStart, newEnd);
+
+  if (oldMid.length === 0 && newMid.length === 0) return [];
+
+  // Use dense integer IDs for large mids to avoid O(64) string comparisons.
+  let parts: ReturnType<typeof Diff.diffArrays>;
+  if (oldMid.length > 3000 && newMid.length > 3000) {
+    const idByStr = new Map<string, number>();
+    let nextId = 1;
+    const toId = (s: string): number => {
+      let id = idByStr.get(s);
+      if (id === undefined) {
+        id = nextId++;
+        idByStr.set(s, id);
+      }
+      return id;
+    };
+    const oldIds = oldMid.map(toId);
+    const newIds = newMid.map(toId);
+    parts = Diff.diffArrays(oldIds as unknown as string[], newIds as unknown as string[]);
+  } else {
+    parts = Diff.diffArrays(oldMid as string[], newMid as string[]);
+  }
+
   const rows: DiffRow[] = [];
   let oldPos = 0;
   let newPos = 0;
@@ -420,12 +469,14 @@ export function buildDiffRows(
     const part = parts[i]!;
     const count = part.value.length;
     if (part.added || part.removed) {
-      for (const line of part.value) {
-        if (part.added) {
-          rows.push({ prefix: "+", anchor: newAnchors[newPos]!, text: line });
+      if (part.added) {
+        for (let k = 0; k < count; k++) {
+          rows.push({ prefix: "+", anchor: newAnchorsMid[newPos]!, text: newMid[newPos]! });
           newPos++;
-        } else {
-          rows.push({ prefix: "-", anchor: oldAnchors[oldPos]!, text: line });
+        }
+      } else {
+        for (let k = 0; k < count; k++) {
+          rows.push({ prefix: "-", anchor: oldAnchorsMid[oldPos]!, text: oldMid[oldPos]! });
           oldPos++;
         }
       }
@@ -443,16 +494,13 @@ export function buildDiffRows(
       let tailCount = 0;
       let tailSkipped = 0;
       if (!lastWasChange) {
-        // Tail of the unchanged run leading into a change.
         skipStart = Math.max(0, count - contextLines);
         start = skipStart;
       } else if (nextIsChange && count > contextLines * 2) {
-        // Long run between two changes: head + ellipsis + tail.
         end = contextLines;
         middleSkipped = count - contextLines * 2;
         tailCount = contextLines;
       } else if (!nextIsChange && count > contextLines) {
-        // Head after a change, long tail beyond context.
         end = contextLines;
         tailSkipped = count - contextLines;
       }
@@ -462,7 +510,7 @@ export function buildDiffRows(
         oldPos += skipStart;
       }
       for (let k = start; k < end; k++) {
-        rows.push({ prefix: " ", anchor: newAnchors[newPos]!, text: newTexts[newPos]! });
+        rows.push({ prefix: " ", anchor: newAnchorsMid[newPos]!, text: newMid[newPos]! });
         newPos++;
         oldPos++;
       }
@@ -471,7 +519,7 @@ export function buildDiffRows(
         newPos += middleSkipped;
         oldPos += middleSkipped;
         for (let k = 0; k < tailCount; k++) {
-          rows.push({ prefix: " ", anchor: newAnchors[newPos]!, text: newTexts[newPos]! });
+          rows.push({ prefix: " ", anchor: newAnchorsMid[newPos]!, text: newMid[newPos]! });
           newPos++;
           oldPos++;
         }
@@ -486,6 +534,18 @@ export function buildDiffRows(
       oldPos += count;
     }
     lastWasChange = false;
+  }
+  // Restore ellipsis for the trimmed-away outer runs beyond the context window.
+  // The mid diff only saw the last `contextLines` of the prefix and first
+  // `contextLines` of the suffix; the omitted `oldStart` prefix lines and
+  // `oldTexts.length - oldEnd` suffix lines must still be indicated.
+  if (rows.length > 0) {
+    if (oldStart > 0 && rows[0]!.text !== "...") {
+      rows.unshift({ prefix: " ", anchor: "", text: "..." });
+    }
+    if (oldEnd < oldTexts.length && rows[rows.length - 1]!.text !== "...") {
+      rows.push({ prefix: " ", anchor: "", text: "..." });
+    }
   }
   return rows;
 }

@@ -11,8 +11,7 @@
  * silently restore mutation capability.
  */
 
-import { loadStore, requireStore, withBusyRetry } from "../state/database";
-
+import { cachedPrepare, loadStore, prepareCached, requireStore, withBusyRetry } from "../state/database";
 export interface FreezeRecord {
   freezeId: string;
   reasonCode: string;
@@ -78,11 +77,9 @@ function serializeFreezes(): string {
 
 function writeFreezeRow(value: string): void {
   withBusyRetry(() =>
-    requireStore()
-      .db.prepare(
-        `INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-      )
-      .run(FREEZE_META_KEY, value),
+    cachedPrepare(
+      `INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).run(FREEZE_META_KEY, value),
   );
 }
 
@@ -128,12 +125,11 @@ function persistFreezes(value: string): void {
 export async function restoreFreezes(): Promise<void> {
   try {
     const store = await loadStore();
-    const row = store.db
-      .prepare(`SELECT value FROM meta WHERE key = ?`)
-      .get(FREEZE_META_KEY) as { value: string } | undefined;
+    const row = prepareCached(store, `SELECT value FROM meta WHERE key = ?`).get(
+      FREEZE_META_KEY,
+    ) as { value: string } | undefined;
     if (!row) return;
     const parsed = JSON.parse(row.value) as FreezeRecord[];
-    if (!Array.isArray(parsed)) return;
     for (const record of parsed) {
       if (
         record &&

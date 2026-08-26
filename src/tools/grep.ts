@@ -226,23 +226,54 @@ export function buildGrepToolDef(): ToolDefinition<any, GrepToolDetails> {
 
         if (!pushLine(`\n${displayPath}`)) break;
         let stopped = false;
-        for (const entry of entries) {
-          const idx = entry.lineNumber - 1;
-          if (idx < 0 || idx >= file.texts.length) continue;
-          const { rows, served } = renderLinesUnserved(file.anchors, file.texts, idx, idx + 1);
-          for (let i = 0; i < rows.length; i++) {
-            const servedEntry = served[i];
-            if (servedEntry) {
-              if (!pushFileRow(realPath, servedEntry.anchor, servedEntry.exactText, rows[i]!)) {
-                stopped = true;
-                break;
+        // Batch contiguous line numbers into single renderLinesUnserved calls
+        // to avoid per-line allocation and repeated Buffer.byteLength.
+        let i = 0;
+        while (i < entries.length) {
+          const startLine = entries[i]!.lineNumber;
+          let endLine = startLine;
+          let j = i + 1;
+          while (j < entries.length && entries[j]!.lineNumber === entries[j - 1]!.lineNumber + 1) {
+            endLine = entries[j]!.lineNumber;
+            j++;
+          }
+          const startIdx = startLine - 1;
+          const endIdx = endLine; // exclusive, 1-indexed endLine -> 0-indexed exclusive
+          if (startIdx >= 0 && startIdx < file.texts.length) {
+            const clampedEnd = Math.min(endIdx, file.texts.length);
+            if (clampedEnd > startIdx) {
+              const { rows, served } = renderLinesUnserved(
+                file.anchors,
+                file.texts,
+                startIdx,
+                clampedEnd,
+              );
+              let servedIdx = 0;
+              for (const row of rows) {
+                // Omitted rows start with "[Line" and have no served entry
+                const isOmitted = row.startsWith("[Line ");
+                if (isOmitted) {
+                  if (!pushLine(row)) {
+                    stopped = true;
+                    break;
+                  }
+                } else {
+                  const entry = served[servedIdx++];
+                  if (entry) {
+                    if (!pushFileRow(realPath, entry.anchor, entry.exactText, row)) {
+                      stopped = true;
+                      break;
+                    }
+                  } else if (!pushLine(row)) {
+                    stopped = true;
+                    break;
+                  }
+                }
               }
-            } else if (!pushLine(rows[i]!)) {
-              stopped = true;
-              break;
             }
           }
           if (stopped) break;
+          i = j;
         }
         if (stopped) break;
       }

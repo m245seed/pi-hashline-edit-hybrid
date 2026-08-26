@@ -46,6 +46,7 @@ import {
 } from "../mutation/transaction";
 import { checkRangeServed, formatRangeFailure } from "../served/authorize";
 import { renderDiff } from "../render/diff";
+import { serveLines, servedWindowNotice } from "../served/ledger";
 import {
   detectBoundaryDuplication,
   boundaryDupRejection,
@@ -418,7 +419,10 @@ async function runEdit(input: RunEditInput): Promise<ReturnType<ToolDefinition<a
       warnings,
     });
 
-    const diff = renderDiff(mutationTargetPath, result.diffRows);
+    const diff = renderDiff(result.diffRows);
+    const evictedRows = serveLines(mutationTargetPath, diff.served);
+    let diffText = diff.text;
+    if (evictedRows > 0) diffText += servedWindowNotice(evictedRows);
     const metrics: MutationMetrics = {
       classification: result.metrics.classification,
       edits_attempted: result.metrics.editsAttempted,
@@ -431,8 +435,7 @@ async function runEdit(input: RunEditInput): Promise<ReturnType<ToolDefinition<a
       after_revision: afterChecksum,
       transaction_id: transactionId,
     };
-    const text = warnings.length > 0 ? `${diff.text}\n\n${warnings.join("\n")}` : diff.text;
-
+    const text = warnings.length > 0 ? `${diffText}\n\n${warnings.join("\n")}` : diffText;
     emitMutationAfter(
       mutationEventBase({
         transactionId,
@@ -455,7 +458,7 @@ async function runEdit(input: RunEditInput): Promise<ReturnType<ToolDefinition<a
     return {
       content: [{ type: "text", text }],
       details: {
-        diff: diff.text,
+        diff: diffText,
         metrics,
         hashline: hashlineDetails({
           outcome: "success",

@@ -29,6 +29,7 @@ import {
   newTransactionIdFor,
 } from "../mutation/transaction";
 import { renderDiff } from "../render/diff";
+import { serveLines, servedWindowNotice } from "../served/ledger";
 import { hashlineDetails } from "../render/result-details";
 import { isFrozen, frozenRejection } from "../integration/freeze";
 import { emitUndoAfter } from "../integration/ipc";
@@ -211,8 +212,10 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
           keepUndo: false,
           warnings: [],
         });
-
-        const diff = renderDiff(mutationTargetPath, diffRows);
+        const diff = renderDiff(diffRows);
+        const evictedRows = serveLines(mutationTargetPath, diff.served);
+        let diffText = diff.text;
+        if (evictedRows > 0) diffText += servedWindowNotice(evictedRows);
         let linesAdded = 0;
         let linesRemoved = 0;
         for (const row of diffRows) {
@@ -232,8 +235,7 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
           transaction_id: transactionId,
         };
         const text =
-          `Undone the last transaction on ${requestPath}. The file was restored to its exact previous bytes and anchors.\n\n${diff.text}`;
-
+          `Undone the last transaction on ${requestPath}. The file was restored to its exact previous bytes and anchors.\n\n${diffText}`;
         emitUndoAfter({
           transactionId,
           toolCallId,
@@ -243,7 +245,7 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
         return {
           content: [{ type: "text", text }],
           details: {
-            diff: diff.text,
+            diff: diffText,
             metrics,
             hashline: hashlineDetails({
               outcome: "success",

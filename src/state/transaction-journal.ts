@@ -10,7 +10,7 @@
  */
 
 import { randomUUID } from "crypto";
-import { requireStore, withBusyRetry, type Store } from "./database";
+import { cachedPrepare, prepareCached, requireStore, withBusyRetry, type Store } from "./database";
 import {
   decodeAnchorsBlob,
   decodeFingerprintsBlob,
@@ -100,9 +100,8 @@ export function insertPendingTransaction(entry: PendingTransaction): void {
   const before = encodeState(entry.before);
   const after = encodeState(entry.after);
   withBusyRetry(() =>
-    store.db
-      .prepare(
-        `INSERT INTO pending_transactions (
+    cachedPrepare(
+      `INSERT INTO pending_transactions (
            transaction_id, path, before_checksum, after_checksum,
            before_anchors, before_fingerprints, before_retired, before_line_count,
            after_anchors, after_fingerprints, after_retired, after_line_count,
@@ -110,8 +109,7 @@ export function insertPendingTransaction(entry: PendingTransaction): void {
            undo_before_anchors, undo_before_fingerprints, undo_before_retired,
            created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
+    ).run(
         entry.transactionId,
         entry.path,
         entry.beforeChecksum,
@@ -139,11 +137,10 @@ export function insertPendingTransaction(entry: PendingTransaction): void {
 }
 
 export function listPendingTransactions(store: Store): PendingTransaction[] {
-  const rows = store.db
-    .prepare(
-      `SELECT * FROM pending_transactions ORDER BY created_at`,
-    )
-    .all() as unknown as PendingRow[];
+  const rows = prepareCached(
+    store,
+    `SELECT * FROM pending_transactions ORDER BY created_at`,
+  ).all() as unknown as PendingRow[];
   return rows.map((row) => ({
     transactionId: row.transaction_id,
     path: row.path,
@@ -173,8 +170,8 @@ export function listPendingTransactions(store: Store): PendingTransaction[] {
 
 export function deletePendingTransaction(store: Store, transactionId: string): void {
   withBusyRetry(() =>
-    store.db
-      .prepare(`DELETE FROM pending_transactions WHERE transaction_id = ?`)
-      .run(transactionId),
+    prepareCached(store, `DELETE FROM pending_transactions WHERE transaction_id = ?`).run(
+      transactionId,
+    ),
   );
 }
