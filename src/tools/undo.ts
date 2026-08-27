@@ -60,7 +60,7 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
     parameters: undoSchema,
     executionMode: "sequential",
 
-    async execute(toolCallId, rawParams, signal, _onUpdate, ctx) {
+    async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
       const params = rawParams as Record<string, unknown>;
       if (!isRec(params)) {
         throw new Error('[E_BAD_SHAPE] undo parameters must be an object.');

@@ -209,7 +209,7 @@ describe("atomic write internals (spec §44–§45)", () => {
     const dir = makeProject();
     const p = join(dir, "shrink.txt");
     writeFileSync(p, "one\ntwo\nthree\nfour\n");
-    await writeInPlace(p, "X\nY\n");
+    await writeInPlace(p, Buffer.from("X\nY\n"));
     expect(readFileSync(p, "utf8")).toBe("X\nY\n");
   });
 
@@ -217,7 +217,7 @@ describe("atomic write internals (spec §44–§45)", () => {
     const dir = makeProject();
     const p = join(dir, "grow.txt");
     writeFileSync(p, "a\n");
-    await writeInPlace(p, "a\nb\nc\n");
+    await writeInPlace(p, Buffer.from("a\nb\nc\n"));
     expect(readFileSync(p, "utf8")).toBe("a\nb\nc\n");
   });
 

@@ -160,12 +160,6 @@ export function renderDiff(rows: DiffRow[]): RenderedDiff {
 
 // --- Hashline rendering (from hashline.ts) ---
 
-export interface DisplayRow {
-  anchor: string;
-  text: string;
-  served: boolean;
-}
-
 export function formatDisplayRow(anchor: string, text: string): string {
   return `${anchor}${HASH_SEP}${text}`;
 }

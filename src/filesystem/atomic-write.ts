@@ -97,7 +97,7 @@ export async function inspectTarget(path: string): Promise<TargetInfo> {
  */
 export async function prepareTempWrite(
   targetPath: string,
-  content: string,
+  content: Uint8Array,
   mode?: number,
 ): Promise<string> {
   const dir = dirname(targetPath);
@@ -105,7 +105,7 @@ export async function prepareTempWrite(
   const tempPath = join(dir, `${TEMP_PREFIX}${randomUUID()}`);
   const handle = await open(tempPath, "wx", 0o600);
   try {
-    await handle.writeFile(content, "utf-8");
+    await handle.writeFile(content);
     if (mode !== undefined) {
       await handle.chmod(mode);
     }
@@ -214,7 +214,7 @@ export async function precommitVerify(
  */
 export async function writeInPlace(
   targetPath: string,
-  content: string,
+  content: Uint8Array,
   mode?: number,
 ): Promise<void> {
   // Use r+ to avoid O_TRUNC before write; create if missing by falling back to w
@@ -229,14 +229,13 @@ export async function writeInPlace(
     }
   }
   try {
-    const data = Buffer.from(content, "utf-8");
-    await handle.writeFile(data);
+    await handle.writeFile(content);
     // If new content is shorter than old file, truncate the remainder.
     // Failures must propagate: swallowing one here would leave the file as
     // new content + stale tail while the edit reports success (spec §45).
     const stat = await handle.stat();
-    if (stat.size > data.length) {
-      await handle.truncate(data.length);
+    if (stat.size > content.byteLength) {
+      await handle.truncate(content.byteLength);
     }
     await handle.sync();
     if (mode !== undefined) {

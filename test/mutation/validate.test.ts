@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   validateEditRequest,
   validateInsertRequest,
+  validateWriteRequest,
   DISPLAY_LIKE_RE,
 } from "../../src/mutation/validate";
 
@@ -149,5 +150,68 @@ describe("insert validation", () => {
 
   it("rejects empty inserts", () => {
     expect(() => validateInsertRequest({ path: "f", inserts: [] })).toThrow(/E_BAD_SHAPE/);
+  });
+});
+
+describe("write request validation (spec §31.8)", () => {
+  it("accepts a valid write request with all optional fields", () => {
+    const request = validateWriteRequest({
+      path: "f.ts",
+      content: "hello\n",
+      replace_existing: true,
+      allow_display_like_content: false,
+      expected_revision: "0".repeat(64),
+    });
+    expect(request.path).toBe("f.ts");
+    expect(request.content).toBe("hello\n");
+    expect(request.replace_existing).toBe(true);
+    expect(request.allow_display_like_content).toBe(false);
+    expect(request.expected_revision).toBe("0".repeat(64));
+  });
+
+  it("accepts a minimal write request with only required fields", () => {
+    const request = validateWriteRequest({ path: "f.ts", content: "x\n" });
+    expect(request.replace_existing).toBeUndefined();
+    expect(request.allow_display_like_content).toBeUndefined();
+    expect(request.expected_revision).toBeUndefined();
+  });
+
+  it("rejects non-object input", () => {
+    expect(() => validateWriteRequest("x")).toThrow(/write parameters must be an object/);
+    expect(() => validateWriteRequest(null)).toThrow(/write parameters must be an object/);
+  });
+
+  it("rejects unknown fields with the write request label", () => {
+    expect(() =>
+      validateWriteRequest({ path: "f", content: "x", bogus: 1 }),
+    ).toThrow(/E_BAD_SHAPE.*write request.*bogus/);
+  });
+
+  it("rejects missing or non-string path", () => {
+    expect(() => validateWriteRequest({ content: "x" })).toThrow(/E_BAD_SHAPE/);
+    expect(() => validateWriteRequest({ path: 3, content: "x" })).toThrow(/E_BAD_SHAPE/);
+  });
+
+  it("rejects missing or non-string content", () => {
+    expect(() => validateWriteRequest({ path: "f" })).toThrow(/A "content" string is required/);
+    expect(() => validateWriteRequest({ path: "f", content: 5 })).toThrow(/A "content" string is required/);
+  });
+
+  it("rejects non-boolean replace_existing and allow_display_like_content", () => {
+    expect(() =>
+      validateWriteRequest({ path: "f", content: "x", replace_existing: "yes" }),
+    ).toThrow(/"replace_existing" must be a boolean/);
+    expect(() =>
+      validateWriteRequest({ path: "f", content: "x", allow_display_like_content: 1 }),
+    ).toThrow(/"allow_display_like_content" must be a boolean/);
+  });
+
+  it("rejects a malformed expected_revision", () => {
+    expect(() =>
+      validateWriteRequest({ path: "f", content: "x", expected_revision: "abc" }),
+    ).toThrow(/"expected_revision" must be a 64-character lowercase SHA-256 hex revision/);
+    expect(() =>
+      validateWriteRequest({ path: "f", content: "x", expected_revision: "G".repeat(64) }),
+    ).toThrow(/"expected_revision" must be a 64-character lowercase SHA-256 hex revision/);
   });
 });

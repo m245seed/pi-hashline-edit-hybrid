@@ -118,18 +118,18 @@ export async function commitAndRenderMutation(opts: {
   const beforeRevision = file.checksum;
 
   if (result.noop) {
-    const metrics: MutationMetrics = {
+    const metrics = buildMutationMetrics({
       classification: "noop",
-      edits_attempted: result.metrics.editsAttempted,
-      edits_applied: 0,
-      edits_noop: result.metrics.editsNoop,
-      lines_added: 0,
-      lines_removed: 0,
+      editsAttempted: result.metrics.editsAttempted,
+      editsApplied: 0,
+      editsNoop: result.metrics.editsNoop,
+      linesAdded: 0,
+      linesRemoved: 0,
       warnings: warnings.length,
-      before_revision: beforeRevision,
-      after_revision: beforeRevision,
-      transaction_id: null,
-    };
+      beforeRevision,
+      afterRevision: beforeRevision,
+      transactionId: null,
+    });
     return {
       content: [{ type: "text", text: "No changes made." }],
       details: {

@@ -16,7 +16,6 @@
  * latency.
  */
 
-import { existsSync } from "fs";
 import { mkdir, rename } from "fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { statePath, stateDir } from "../paths";
@@ -28,8 +27,6 @@ import {
   DB_BUSY_RETRY_DELAY_MS,
 } from "../constants";
 import { FILES_TABLE, UNDO_TABLE, PENDING_TABLE, META_TABLE, SCHEMA_KEY } from "./schema";
-
-export type SqlParam = string | number | bigint | Uint8Array | null;
 
 export interface Store {
   readonly db: DatabaseSync;
@@ -360,6 +357,3 @@ export async function resetStoreForTests(): Promise<void> {
   opening = null;
 }
 
-export function storePathExists(): boolean {
-  return existsSync(statePath());
-}

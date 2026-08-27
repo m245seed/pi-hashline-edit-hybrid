@@ -12,7 +12,6 @@ import {
   decodeAnchorsBlob,
   decodeFingerprintsBlob,
   decodeRetiredBlob,
-  type UndoPayload,
 } from "./snapshots";
 
 interface UndoRow {
@@ -67,21 +66,6 @@ export function getUndoRecord(path: string): UndoRecord | undefined {
 
 export function deleteUndoRecord(path: string): void {
   withBusyRetry(() => cachedPrepare(`DELETE FROM undo WHERE path = ?`).run(path));
-}
-
-export function undoPayloadToRecord(payload: UndoPayload): UndoRecord {
-  return {
-    path: payload.path,
-    transactionId: payload.transactionId,
-    beforeBytes: payload.beforeBytes,
-    afterChecksum: payload.afterChecksum,
-    beforeAnchors: payload.beforeAnchors,
-    beforeFingerprints: payload.beforeFingerprints,
-    beforeRetired: payload.beforeRetired,
-    afterAnchors: payload.afterAnchors,
-    afterFingerprints: payload.afterFingerprints,
-    afterRetired: payload.afterRetired,
-  };
 }
 
 export async function loadUndoRecord(path: string): Promise<UndoRecord | undefined> {

@@ -192,12 +192,6 @@ export function pruneServedPath(
     }
   }
 }
-
-export function clearServedAll(): void {
-  ledger.clear();
-  staleAnchors.clear();
-}
-
 /** Test helper. */
 export function resetServed(): void {
   ledger.clear();

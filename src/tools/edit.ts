@@ -131,11 +131,10 @@ export function buildEditToolDef(): ToolDefinition<any, EditToolDetails> {
     parameters: editSchema,
     executionMode: "sequential",
 
-    async execute(toolCallId, params, signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const request = validateEditRequest(params);
       const mutationTargetPath = await resolveMutationTarget(request.path, ctx.cwd);
       return runEdit({
-        toolCallId,
         request,
         mutationTargetPath,
         signal,
@@ -145,7 +144,6 @@ export function buildEditToolDef(): ToolDefinition<any, EditToolDetails> {
 }
 
 interface RunEditInput {
-  toolCallId: string;
   request: EditRequest;
   mutationTargetPath: string;
   signal?: AbortSignal;

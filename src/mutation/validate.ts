@@ -70,6 +70,14 @@ export interface InsertRequest {
   expected_revision?: string;
 }
 
+export interface WriteRequest {
+  path: string;
+  content: string;
+  replace_existing?: boolean;
+  allow_display_like_content?: boolean;
+  expected_revision?: string;
+}
+
 /** Display-like hashline rows: `Ab31│...`, `+Ab31│...`, `-Ab31│...`, ` Ab31│...`. */
 export const DISPLAY_LIKE_RE = new RegExp(`^[ +-]?${ANCHOR_CLASS}${"│"}`);
 
@@ -157,6 +165,13 @@ function assertFinalNewline(value: unknown): FinalNewline | undefined {
   );
 }
 
+function assertOptionalBoolean(value: unknown, field: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") {
+    throw new Error(`[E_BAD_SHAPE] "${field}" must be a boolean.`);
+  }
+  return value;
+}
 function assertExpectedRevision(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value === "string" && /^[0-9a-f]{64}$/.test(value)) {
@@ -176,22 +191,9 @@ export function validateEditRequest(request: unknown): EditRequest {
   if (!Array.isArray(request.edits) || request.edits.length === 0) {
     throw new Error('[E_BAD_SHAPE] Edit request requires a non-empty "edits" array.');
   }
-  const allowDisplayLike = request.allow_display_like_content === true;
-  if (
-    request.allow_display_like_content !== undefined &&
-    typeof request.allow_display_like_content !== "boolean"
-  ) {
-    throw new Error('[E_BAD_SHAPE] "allow_display_like_content" must be a boolean.');
-  }
-  if (
-    request.allow_boundary_duplicate !== undefined &&
-    typeof request.allow_boundary_duplicate !== "boolean"
-  ) {
-    throw new Error('[E_BAD_SHAPE] "allow_boundary_duplicate" must be a boolean.');
-  }
-  if (request.allow_large_change !== undefined && typeof request.allow_large_change !== "boolean") {
-    throw new Error('[E_BAD_SHAPE] "allow_large_change" must be a boolean.');
-  }
+  const allowDisplayLike = assertOptionalBoolean(request.allow_display_like_content, "allow_display_like_content");
+  const allowBoundaryDuplicate = assertOptionalBoolean(request.allow_boundary_duplicate, "allow_boundary_duplicate");
+  const allowLargeChange = assertOptionalBoolean(request.allow_large_change, "allow_large_change");
   const edits: EditItem[] = [];
   for (let i = 0; i < request.edits.length; i++) {
     const item = request.edits[i];
@@ -212,16 +214,16 @@ export function validateEditRequest(request: unknown): EditRequest {
       throw new Error(`[E_BAD_SHAPE] Edit #${i + 1} requires a "lines" array.`);
     }
     const lines = assertLines(item.lines, `Edit #${i + 1}`, (line) =>
-      suspiciousContentCheck(line, allowDisplayLike),
+      suspiciousContentCheck(line, allowDisplayLike === true),
     );
     edits.push({ range, lines });
   }
   return {
     path,
     edits,
-    allow_display_like_content: request.allow_display_like_content,
-    allow_boundary_duplicate: request.allow_boundary_duplicate,
-    allow_large_change: request.allow_large_change,
+    allow_display_like_content: allowDisplayLike,
+    allow_boundary_duplicate: allowBoundaryDuplicate,
+    allow_large_change: allowLargeChange,
     final_newline: assertFinalNewline(request.final_newline),
     expected_revision: assertExpectedRevision(request.expected_revision),
   };
@@ -236,13 +238,7 @@ export function validateInsertRequest(request: unknown): InsertRequest {
   if (!Array.isArray(request.inserts) || request.inserts.length === 0) {
     throw new Error('[E_BAD_SHAPE] Insert request requires a non-empty "inserts" array.');
   }
-  const allowDisplayLike = request.allow_display_like_content === true;
-  if (
-    request.allow_display_like_content !== undefined &&
-    typeof request.allow_display_like_content !== "boolean"
-  ) {
-    throw new Error('[E_BAD_SHAPE] "allow_display_like_content" must be a boolean.');
-  }
+  const allowDisplayLike = assertOptionalBoolean(request.allow_display_like_content, "allow_display_like_content");
   const inserts: InsertItem[] = [];
   for (let i = 0; i < request.inserts.length; i++) {
     const item = request.inserts[i];
@@ -260,15 +256,36 @@ export function validateInsertRequest(request: unknown): InsertRequest {
       throw new Error(`[E_BAD_SHAPE] Insert #${i + 1} requires a "lines" array.`);
     }
     const lines = assertLines(item.lines, `Insert #${i + 1}`, (line) =>
-      suspiciousContentCheck(line, allowDisplayLike),
+      suspiciousContentCheck(line, allowDisplayLike === true),
     );
     inserts.push({ anchor, direction: item.direction, lines });
   }
   return {
     path,
     inserts,
-    allow_display_like_content: request.allow_display_like_content,
+    allow_display_like_content: allowDisplayLike,
     final_newline: assertFinalNewline(request.final_newline),
     expected_revision: assertExpectedRevision(request.expected_revision),
+  };
+}
+
+export function validateWriteRequest(request: unknown): WriteRequest {
+  if (!isRec(request)) {
+    throw new Error("[E_BAD_SHAPE] write parameters must be an object.");
+  }
+  rejectUnknownFields(request, WRITE_ROOT_KEYS, "write request");
+  const path = assertPath(request.path);
+  if (typeof request.content !== "string") {
+    throw new Error('[E_BAD_SHAPE] A "content" string is required.');
+  }
+  const replaceExisting = assertOptionalBoolean(request.replace_existing, "replace_existing");
+  const allowDisplayLike = assertOptionalBoolean(request.allow_display_like_content, "allow_display_like_content");
+  const expectedRevision = assertExpectedRevision(request.expected_revision);
+  return {
+    path,
+    content: request.content,
+    replace_existing: replaceExisting,
+    allow_display_like_content: allowDisplayLike,
+    expected_revision: expectedRevision,
   };
 }

@@ -17,7 +17,7 @@
 import { stat as fsStat } from "fs/promises";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { abortIf, debugLog, errCode, isRec, rejectUnknownFields, sha256Hex } from "../utils";
+import { abortIf, debugLog, errCode, sha256Hex } from "../utils";
 import { withFileMutationQueue } from "../filesystem/resolve-target";
 import { resolveMutationTarget, renderAutoReadPreview } from "./shared";
 import {
@@ -25,7 +25,7 @@ import {
   MAX_LINES,
   HASHLINE_PROTOCOL_ID,
 } from "../constants";
-import { decodeDocument, encodeDocument } from "../document/encoding";
+import { decodeDocument } from "../document/encoding";
 import type { Document } from "../document/lines";
 import { AnchorAllocator } from "../anchors/allocator";
 import { fingerprintHexes } from "../anchors/fingerprints";
@@ -36,7 +36,7 @@ import {
   anchorSpaceWarning,
 } from "../mutation/transaction";
 import { newTransactionId } from "../state/transaction-journal";
-import { suspiciousContentCheck, WRITE_ROOT_KEYS, LONE_SURROGATE_RE } from "../mutation/validate";
+import { suspiciousContentCheck, LONE_SURROGATE_RE, validateWriteRequest, type WriteRequest } from "../mutation/validate";
 import { checkRangeServed, formatRangeFailure } from "../served/authorize";
 import { pruneServedPath } from "../served/ledger";
 import { hashlineDetails } from "../render/result-details";
@@ -93,8 +93,8 @@ const W_GUIDELINES = [
 
 
 function encodeContent(content: string): { doc: Document; raw: Buffer } {
-  const doc = decodeDocument(Buffer.from(content, "utf-8"), "write content");
-  const raw = Buffer.from(encodeDocument(doc), "utf-8");
+  const raw = Buffer.from(content, "utf-8");
+  const doc = decodeDocument(raw, "write content");
   return { doc, raw };
 }
 
@@ -108,53 +108,12 @@ export function buildWriteToolDef(): ToolDefinition<any, WriteToolDetails> {
     parameters: writeSchema,
     executionMode: "sequential",
 
-    async execute(toolCallId, rawParams, signal, _onUpdate, ctx) {
-      const params = rawParams as Record<string, unknown>;
-      if (!isRec(params)) {
-        throw new Error('[E_BAD_SHAPE] write parameters must be an object.');
-      }
-      rejectUnknownFields(params, WRITE_ROOT_KEYS, "write request");
-      if (typeof params.path !== "string" || params.path.length === 0) {
-        throw new Error('[E_BAD_SHAPE] A non-empty "path" string is required.');
-      }
-      if (typeof params.content !== "string") {
-        throw new Error('[E_BAD_SHAPE] A "content" string is required.');
-      }
-      if (
-        params.replace_existing !== undefined &&
-        typeof params.replace_existing !== "boolean"
-      ) {
-        throw new Error('[E_BAD_SHAPE] "replace_existing" must be a boolean.');
-      }
-      if (
-        params.allow_display_like_content !== undefined &&
-        typeof params.allow_display_like_content !== "boolean"
-      ) {
-        throw new Error('[E_BAD_SHAPE] "allow_display_like_content" must be a boolean.');
-      }
-      if (
-        params.expected_revision !== undefined &&
-        !(typeof params.expected_revision === "string" && /^[0-9a-f]{64}$/.test(params.expected_revision))
-      ) {
-        throw new Error(
-          '[E_BAD_SHAPE] "expected_revision" must be a 64-character lowercase SHA-256 hex revision.',
-        );
-      }
-      const requestPath = params.path;
-      const content = params.content;
-      const replaceExisting = params.replace_existing === true;
-      const expectedRevision = params.expected_revision as string | undefined;
-      const allowDisplayLike = params.allow_display_like_content === true;
-
-      const mutationTargetPath = await resolveMutationTarget(requestPath, ctx.cwd);
+    async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
+      const request = validateWriteRequest(rawParams);
+      const mutationTargetPath = await resolveMutationTarget(request.path, ctx.cwd);
       return runWrite({
-        toolCallId,
-        requestPath,
+        request,
         mutationTargetPath,
-        content,
-        replaceExisting,
-        expectedRevision,
-        allowDisplayLike,
         signal,
       });
     },
@@ -162,26 +121,22 @@ export function buildWriteToolDef(): ToolDefinition<any, WriteToolDetails> {
 }
 
 interface RunWriteInput {
-  toolCallId: string;
-  requestPath: string;
+  request: WriteRequest;
   mutationTargetPath: string;
-  content: string;
-  replaceExisting: boolean;
-  expectedRevision?: string;
-  allowDisplayLike: boolean;
   signal?: AbortSignal;
 }
 
 async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition<any, WriteToolDetails>["execute"]>> {
   const {
-    requestPath,
+    request,
     mutationTargetPath,
-    content,
-    replaceExisting,
-    expectedRevision,
-    allowDisplayLike,
     signal,
   } = input;
+  const requestPath = request.path;
+  const content = request.content;
+  const replaceExisting = request.replace_existing === true;
+  const expectedRevision = request.expected_revision;
+  const allowDisplayLike = request.allow_display_like_content === true;
 
   return withFileMutationQueue(mutationTargetPath, async () => {
 

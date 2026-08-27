@@ -251,7 +251,6 @@ export async function commitMutation(input: CommitInput): Promise<void> {
     createdAt: Date.now(),
   });
 
-  const content = rawAfter.toString("utf-8");
   const target = await inspectTarget(realPath);
   let tempPath: string | undefined;
   let fileCommitted = false;
@@ -260,7 +259,7 @@ export async function commitMutation(input: CommitInput): Promise<void> {
     if (target.hardlink) {
       await precommitVerify(realPath, realPath, rawBefore, expectAbsent === true);
       abortCheck(signal);
-      await writeInPlace(target.targetPath, content, target.mode);
+      await writeInPlace(target.targetPath, rawAfter, target.mode);
       fileCommitted = true;
       warnings.push(
         `[W_HARDLINK_NONATOMIC] ${label} has multiple hard links. The edit preserved the shared inode, so the write could not use atomic rename semantics.`,
@@ -269,7 +268,7 @@ export async function commitMutation(input: CommitInput): Promise<void> {
       try {
         tempPath = await prepareTempWrite(
           target.targetPath,
-          content,
+          rawAfter,
           target.mode ?? (expectAbsent ? 0o644 : undefined),
         );
         await precommitVerify(realPath, realPath, rawBefore, expectAbsent === true);

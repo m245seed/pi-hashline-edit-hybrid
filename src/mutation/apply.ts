@@ -153,10 +153,10 @@ function prepareSpans(
   doc: Document,
   ops: MutationOp[],
   finalNewline: FinalNewline,
+  originalText: string,
 ): { spans: PreparedSpan[]; unusedFinalNewline: boolean } {
   const lines = doc.lines;
   const offsets = byteOffsets(lines);
-  const originalText = joinTextLines(lines);
   const rawLen = originalText.length;
   const prefEol = preferredEol(lines);
   const n = lines.length;
@@ -261,7 +261,8 @@ export function applyTransaction(
   options: { finalNewline?: FinalNewline } = {},
 ): ApplyResult {
   const finalNewline = options.finalNewline ?? "preserve";
-  const { spans, unusedFinalNewline } = prepareSpans(doc, ops, finalNewline);
+  const originalText = joinTextLines(doc.lines);
+  const { spans, unusedFinalNewline } = prepareSpans(doc, ops, finalNewline, originalText);
   const lines = doc.lines;
 
   if (spans.length > 0) {
@@ -286,7 +287,6 @@ export function applyTransaction(
   }
 
   // ── Splice bytes ─────────────────────────────────────────────────────
-  const originalText = joinTextLines(lines);
   let resultText = "";
   let cursor = 0;
   for (const span of spans) {

@@ -91,11 +91,10 @@ export function buildInsertToolDef(): ToolDefinition<any, InsertToolDetails> {
     parameters: insertSchema,
     executionMode: "sequential",
 
-    async execute(toolCallId, params, signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const request = validateInsertRequest(params);
       const mutationTargetPath = await resolveMutationTarget(request.path, ctx.cwd);
       return runInsert({
-        toolCallId,
         request,
         mutationTargetPath,
         signal,
@@ -105,7 +104,6 @@ export function buildInsertToolDef(): ToolDefinition<any, InsertToolDetails> {
 }
 
 interface RunInsertInput {
-  toolCallId: string;
   request: ReturnType<typeof validateInsertRequest>;
   mutationTargetPath: string;
   signal?: AbortSignal;

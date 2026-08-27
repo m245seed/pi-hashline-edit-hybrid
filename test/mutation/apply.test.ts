@@ -254,6 +254,37 @@ describe("applyTransaction — line endings (spec §40)", () => {
   });
 });
 
+describe("applyTransaction — multibyte + mixed endings + multiple ops", () => {
+  it("preserves exact encoded output, unique anchors, and unchanged anchors outside affected ranges", () => {
+    // Multibyte text (emoji = 4 code units via surrogate pair) plus mixed
+    // line endings: \n (lines 0,2), \r\n (line 1). \n dominates (2 vs 1).
+    const s = setup("αβγ\nδ\r\nε\n");
+    const result = applyTransaction(
+      s.doc,
+      { anchors: s.anchors, retired: s.retired },
+      [
+        // Replace the multibyte line 0.
+        edit(0, 0, ["😀α"], 0),
+        // Insert after the CRLF line (index 1).
+        insert(1, "after", ["ζ"], 1),
+      ],
+    );
+    // Exact encoded output: new line 0 + dominant \n for its terminator,
+    // inserted ζ uses dominant \n, untouched CRLF and ε\n preserved.
+    expect(encodeDocument(result.document)).toBe("😀α\nδ\r\nζ\nε\n");
+    assertInvariants(result);
+    // Untouched lines (index 1 = δ, index 2 = ε) keep their anchors; only their
+    // positions shift due to the inserted line.
+    expect(result.anchors[1]).toBe(s.anchors[1]); // δ (was CRLF, untouched)
+    expect(result.anchors[3]).toBe(s.anchors[2]); // ε (untouched)
+    // The replaced line 0 and inserted line get fresh anchors.
+    expect(result.anchors[0]).not.toBe(s.anchors[0]);
+    expect(result.anchors[2]).not.toBe(s.anchors[1]);
+    expect(result.anchors[2]).not.toBe(s.anchors[2]);
+    expect(result.retiredAdded).toEqual([s.anchors[0]]);
+  });
+});
+
 describe("applyTransaction — final_newline policy (spec §41)", () => {
   it("present adds a final newline", () => {
     const s = setup("a\nb");

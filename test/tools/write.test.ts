@@ -184,4 +184,25 @@ describe("write tool (spec §31.8, PH-WRITE-001..003)", () => {
     expect(result.isError).toBeFalsy();
     expect(readFileAt(join(dir, "notes.md"))).toBe("Ab31│literal row\nplain\n");
   });
+
+  it("preserves a UTF-8 BOM and CRLF endings byte-for-byte through the commit path", async () => {
+    const dir = makeProject();
+    const content = "\uFEFFone\r\ntwo\r\n";
+    const result = await runTool(
+      writeTool,
+      { path: "bom-crlf.txt", content },
+      dir,
+    );
+    expect(result.isError).toBeFalsy();
+    // Raw bytes on disk are exactly the input bytes (BOM + CRLF preserved).
+    const raw = require("fs").readFileSync(join(dir, "bom-crlf.txt"));
+    expect(raw.equals(Buffer.from(content, "utf-8"))).toBe(true);
+    // Decoded text read back is exactly the input string.
+    expect(readFileAt(join(dir, "bom-crlf.txt"))).toBe(content);
+    // The auto-preview contains anchored `one` and `two` rows.
+    const text = textOf(result);
+    const anchors = anchorsFromRead(text);
+    expect(anchors.get("one")).toBeDefined();
+    expect(anchors.get("two")).toBeDefined();
+  });
 });

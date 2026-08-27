@@ -1,7 +1,14 @@
-# Benchmark suite per pi-hashline-review-plan.md
+# Benchmark suite
 
-Run via `npx tsx benchmark/bench.ts` (requires `npm install`).
+Run after dependencies are installed:
 
-Measures 1k/10k/50k hot paths for the optimizations listed in `'/home/user/.omp/agent/sessions/-Desktop-pi-pi-hashline-edit-hybrid/2026-08-24T22-26-49-021Z_01a035e2-283d-74b4-a03f-d3438de61df5/local/pi-hashline-review-plan.md'`.
+```
+npx tsx benchmark/bench.ts
+```
 
-Expect <7s for core + 3s for integration (1k/10k) on typical dev machine.
+The suite exercises the current 1k/10k/50k anchor, document, mutation,
+served-state, persistence, and tool paths using temporary projects and state
+stores, and cleans them up when finished. It is an observational regression
+check: record its output as a baseline and watch for import/type/runtime
+failures or unexpected regressions, rather than enforcing a fixed timing
+threshold.
