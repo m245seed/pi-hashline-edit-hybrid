@@ -1,7 +1,7 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { withStateDir } from "../support/env";
-import { initHasher } from "../../src/anchors/hasher";
-import { resetStoreForTests, loadStore, requireStore } from "../../src/state/database";
+
+import { resetStoreForTests, loadStore } from "../../src/state/database";
 import {
   encodeAnchorsBlob,
   decodeAnchorsBlob,
@@ -23,9 +23,7 @@ import {
 } from "../../src/state/transaction-journal";
 import { getUndoRecord, deleteUndoRecord, loadUndoRecord, clearUndoRecord } from "../../src/state/undo";
 
-beforeAll(async () => {
-  await initHasher();
-});
+;
 
 beforeEach(() => {
   withStateDir();
@@ -81,34 +79,34 @@ describe("blob codecs (spec §65)", () => {
 
 describe("snapshot store", () => {
   it("persists and loads a snapshot", async () => {
-    const store = await loadStore();
-    putSnapshot(store, "/p/a.ts", snapshot("/p/a.ts", ["one", "two"]));
-    const loaded = getSnapshot(store, "/p/a.ts");
+    await loadStore();
+    putSnapshot("/p/a.ts", snapshot("/p/a.ts", ["one", "two"]));
+    const loaded = getSnapshot("/p/a.ts");
     expect(loaded?.anchors).toEqual(["A000", "A001"]);
     expect(loaded?.retired).toEqual(new Set(["Z000", "Z001"]));
     expect(loaded?.rawChecksum).toBe("a".repeat(64));
   });
 
   it("returns undefined for unknown paths", async () => {
-    const store = await loadStore();
-    expect(getSnapshot(store, "/p/nope.ts")).toBeUndefined();
+    await loadStore();
+    expect(getSnapshot("/p/nope.ts")).toBeUndefined();
   });
 
   it("drops a corrupt row and self-heals instead of failing forever", async () => {
     const store = await loadStore();
-    putSnapshot(store, "/p/good.ts", snapshot("/p/good.ts", ["one"]));
+    putSnapshot("/p/good.ts", snapshot("/p/good.ts", ["one"]));
     // Corrupt the anchors blob so it no longer decodes against line_count.
     store.db
       .prepare(`UPDATE files SET anchors = ? WHERE path = ?`)
       .run(Buffer.from("A00"), "/p/good.ts");
-    expect(getSnapshot(store, "/p/good.ts")).toBeUndefined();
+    expect(getSnapshot("/p/good.ts")).toBeUndefined();
     // The corrupt row was removed; a fresh snapshot can be written again.
     const row = store.db
       .prepare(`SELECT COUNT(*) AS n FROM files WHERE path = ?`)
       .get("/p/good.ts") as { n: number };
     expect(row.n).toBe(0);
-    putSnapshot(store, "/p/good.ts", snapshot("/p/good.ts", ["one"]));
-    expect(getSnapshot(store, "/p/good.ts")?.anchors).toEqual(["A000"]);
+    putSnapshot("/p/good.ts", snapshot("/p/good.ts", ["one"]));
+    expect(getSnapshot("/p/good.ts")?.anchors).toEqual(["A000"]);
   });
 });
 
@@ -143,32 +141,32 @@ describe("transaction journal", () => {
   }
 
   it("inserts, lists, and deletes pending transactions", async () => {
-    const store = await loadStore();
+    await loadStore();
     const id = newTransactionId();
     insertPendingTransaction(pending("/p/a.ts", id));
-    const listed = listPendingTransactions(store);
+    const listed = listPendingTransactions();
     expect(listed.length).toBe(1);
     expect(listed[0]!.transactionId).toBe(id);
     expect(listed[0]!.before.anchors).toEqual(["A000"]);
     expect(listed[0]!.after.anchors).toEqual(["A000", "B001"]);
     expect(listed[0]!.undo?.beforeBytes.toString()).toBe("one\n");
-    deletePendingTransaction(store, id);
-    expect(listPendingTransactions(store).length).toBe(0);
+    deletePendingTransaction(id);
+    expect(listPendingTransactions().length).toBe(0);
   });
 
   it("supports undo-less pending records (undo operations)", async () => {
-    const store = await loadStore();
+    await loadStore();
     const entry = pending("/p/a.ts", newTransactionId());
     entry.undo = null;
     insertPendingTransaction(entry);
-    const listed = listPendingTransactions(store);
+    const listed = listPendingTransactions();
     expect(listed[0]!.undo).toBeNull();
   });
 });
 
 describe("finalizeTransaction", () => {
   it("atomically writes snapshot + undo and clears the journal", async () => {
-    const store = await loadStore();
+    await loadStore();
     const id = newTransactionId();
     const snap = snapshot("/p/a.ts", ["one", "two", "three"]);
     insertPendingTransaction({
@@ -205,23 +203,23 @@ describe("finalizeTransaction", () => {
       pendingTransactionId: id,
     });
 
-    expect(listPendingTransactions(requireStore()).length).toBe(0);
-    expect(getSnapshot(requireStore(), "/p/a.ts")?.anchors).toEqual(snap.anchors);
-    const undo = getUndoRecord(requireStore(), "/p/a.ts");
+    expect(listPendingTransactions().length).toBe(0);
+    expect(getSnapshot("/p/a.ts")?.anchors).toEqual(snap.anchors);
+    const undo = getUndoRecord("/p/a.ts");
     expect(undo?.beforeBytes.toString()).toBe("one\n");
     expect(undo?.afterAnchors).toEqual(snap.anchors);
   });
 
   it("clears undo when no undo payload is supplied", async () => {
-    const store = await loadStore();
+    await loadStore();
     const snap = snapshot("/p/a.ts", ["one"]);
     finalizeTransaction({
       snapshot: snap,
       undoPayload: null,
       pendingTransactionId: "nope",
     });
-    expect(getUndoRecord(requireStore(), "/p/a.ts")).toBeUndefined();
-    deleteUndoRecord(store, "/p/a.ts");
+    expect(getUndoRecord("/p/a.ts")).toBeUndefined();
+    deleteUndoRecord("/p/a.ts");
     // A second finalize with payload now creates the record.
     finalizeTransaction({
       snapshot: snap,
@@ -239,13 +237,13 @@ describe("finalizeTransaction", () => {
       },
       pendingTransactionId: "nope",
     });
-    expect(getUndoRecord(requireStore(), "/p/a.ts")?.transactionId).toBe("t2");
+    expect(getUndoRecord("/p/a.ts")?.transactionId).toBe("t2");
   });
 });
 
 describe("undo record helpers", () => {
   it("loads and clears undo records by path", async () => {
-    const store = await loadStore();
+    await loadStore();
     const snap = snapshot("/p/u.ts", ["one"]);
     finalizeTransaction({
       snapshot: snap,

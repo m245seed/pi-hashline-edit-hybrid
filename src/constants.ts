@@ -1,4 +1,6 @@
-/** Resource-control limits (spec §53). */
+/** Resource-control limits and canonical protocol IDs (spec §31, §53). */
+export const HASHLINE_PROTOCOL_ID = "pi-hashline/1" as const;
+export const HASHLINE_RESULT_PROTOCOL = "pi-hashline-result/1" as const;
 export const MAX_BYTES = 100 * 1024 * 1024;
 export const MAX_LINES = 250_000;
 export const MAX_DISPLAY_LINE_BYTES = 200 * 1024;

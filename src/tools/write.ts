@@ -7,51 +7,39 @@
  *
  * - New files: permitted with size/path policy and an atomic write.
  * - Existing files: require either explicit full-file read authorization in
- *   the current context epoch, or `replace_existing: true` as an explicit
- *   high-risk override (further gated by Sentinel policy when present).
+ *   the current context epoch, or `replace_existing: true` as an explicit *   high-risk override.
  *
  * The write participates in the file mutation queue, creates undo/journal
  * records, reconciles anchors only after a successful atomic commit, and
  * returns a bounded anchored preview (PH-WRITE-002).
  */
 
-import { HASHLINE_PROTOCOL_ID } from "../integration/protocol";
 import { stat as fsStat } from "fs/promises";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { toCwd } from "../paths";
 import { abortIf, debugLog, errCode, isRec, rejectUnknownFields, sha256Hex } from "../utils";
-import { withFileMutationQueue } from "../filesystem/concurrency";
-import { resolveTarget } from "../filesystem/resolve-target";
+import { withFileMutationQueue } from "../filesystem/resolve-target";
+import { resolveMutationTarget, renderAutoReadPreview } from "./shared";
 import {
   MAX_BYTES,
   MAX_LINES,
-  AUTO_READ_MAX_LINES,
-  AUTO_READ_MAX_BYTES,
+  HASHLINE_PROTOCOL_ID,
 } from "../constants";
-import { splitTextLines, joinTextLines, type Document } from "../document/lines";
+import { decodeDocument, encodeDocument } from "../document/encoding";
+import type { Document } from "../document/lines";
 import { AnchorAllocator } from "../anchors/allocator";
 import { fingerprintHexes } from "../anchors/fingerprints";
 import { reconcileState } from "../anchors/reconcile";
 import {
   loadAnchoredFile,
   commitMutation,
-  newTransactionIdFor,
   anchorSpaceWarning,
 } from "../mutation/transaction";
-import { suspiciousContentCheck, WRITE_ROOT_KEYS } from "../mutation/validate";
+import { newTransactionId } from "../state/transaction-journal";
+import { suspiciousContentCheck, WRITE_ROOT_KEYS, LONE_SURROGATE_RE } from "../mutation/validate";
 import { checkRangeServed, formatRangeFailure } from "../served/authorize";
-import { pruneServedPath, serveLines, servedWindowNotice } from "../served/ledger";
-import { renderLinesBounded } from "../render/hashline";
+import { pruneServedPath } from "../served/ledger";
 import { hashlineDetails } from "../render/result-details";
-import { isFrozen, frozenRejection } from "../integration/freeze";
-import {
-  emitMutationBefore,
-  emitMutationAfter,
-  emitMutationRejected,
-  mutationEventBase,
-} from "../integration/ipc";
-
 export interface WriteToolDetails {
   revision: string;
   totalLines: number;
@@ -103,18 +91,10 @@ const W_GUIDELINES = [
   "Content resembling pasted hashline output is rejected with E_DISPLAY_LIKE_CONTENT; pass allow_display_like_content: true only for genuinely literal content.",
 ];
 
-const LONE_SURROGATE_RE =
-  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 function encodeContent(content: string): { doc: Document; raw: Buffer } {
-  let bom = "";
-  let body = content;
-  if (body.charCodeAt(0) === 0xfeff) {
-    bom = "\uFEFF";
-    body = body.slice(1);
-  }
-  const doc: Document = { bom, lines: splitTextLines(body) };
-  const raw = Buffer.from(bom + joinTextLines(doc.lines), "utf-8");
+  const doc = decodeDocument(Buffer.from(content, "utf-8"), "write content");
+  const raw = Buffer.from(encodeDocument(doc), "utf-8");
   return { doc, raw };
 }
 
@@ -166,43 +146,17 @@ export function buildWriteToolDef(): ToolDefinition<any, WriteToolDetails> {
       const expectedRevision = params.expected_revision as string | undefined;
       const allowDisplayLike = params.allow_display_like_content === true;
 
-      const absolutePath = toCwd(requestPath, ctx.cwd);
-      const mutationTargetPath = await resolveTarget(absolutePath);
-      const rejectionTxId = newTransactionIdFor();
-      let beforeSha = "";
-      try {
-        return await runWrite({
-          toolCallId,
-          requestPath,
-          mutationTargetPath,
-          content,
-          replaceExisting,
-          expectedRevision,
-          allowDisplayLike,
-          signal,
-          trackBeforeSha: (sha) => {
-            beforeSha = sha;
-          },
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const code = /\[(E_[A-Z0-9_]+)\]/.exec(message)?.[1] ?? "E_UNKNOWN";
-        emitMutationRejected(
-          mutationEventBase({
-            transactionId: rejectionTxId,
-            toolCallId,
-            path: mutationTargetPath,
-            operation: "write",
-            editCount: 1,
-            removedLines: 0,
-            addedLines: 0,
-            beforeSha256: beforeSha,
-            outcome: code === "E_ABORTED" ? "cancelled" : "rejected",
-            warningCodes: [code],
-          }),
-        );
-        throw error;
-      }
+      const mutationTargetPath = await resolveMutationTarget(requestPath, ctx.cwd);
+      return runWrite({
+        toolCallId,
+        requestPath,
+        mutationTargetPath,
+        content,
+        replaceExisting,
+        expectedRevision,
+        allowDisplayLike,
+        signal,
+      });
     },
   };
 }
@@ -216,12 +170,10 @@ interface RunWriteInput {
   expectedRevision?: string;
   allowDisplayLike: boolean;
   signal?: AbortSignal;
-  trackBeforeSha: (sha: string) => void;
 }
 
 async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition<any, WriteToolDetails>["execute"]>> {
   const {
-    toolCallId,
     requestPath,
     mutationTargetPath,
     content,
@@ -229,14 +181,9 @@ async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition
     expectedRevision,
     allowDisplayLike,
     signal,
-    trackBeforeSha,
   } = input;
 
   return withFileMutationQueue(mutationTargetPath, async () => {
-    // PH §12.5: destructive tools reject while a Sentinel freeze is active.
-    if (isFrozen()) {
-      throw new Error(frozenRejection("write"));
-    }
 
     // Size / shape policy (PH-WRITE, §31.8).
     if (LONE_SURROGATE_RE.test(content)) {
@@ -303,7 +250,6 @@ async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition
       retiredAfter = new Set<string>();
     } else {
       const file = await loadAnchoredFile(mutationTargetPath, requestPath);
-      trackBeforeSha(file.checksum);
       rawBefore = file.raw;
       checksumBefore = file.checksum;
       docBefore = file.doc;
@@ -351,25 +297,7 @@ async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition
     const pressure = anchorSpaceWarning(new Set(anchorsAfter).size, retiredAfter.size);
     if (pressure) warnings.push(pressure);
 
-    const transactionId = newTransactionIdFor();
-    const removedLines = isNew ? 0 : docBefore.lines.length;
-    const addedLines = newTexts.length;
-
-    emitMutationBefore(
-      mutationEventBase({
-        transactionId,
-        toolCallId,
-        path: mutationTargetPath,
-        operation: "write",
-        editCount: 1,
-        removedLines,
-        addedLines,
-        beforeSha256: checksumBefore,
-        afterSha256: afterChecksum,
-        outcome: "success",
-        warningCodes: [],
-      }),
-    );
+    const transactionId = newTransactionId();
 
     abortIf(signal);
     await commitMutation({
@@ -402,44 +330,13 @@ async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition
     }
     pruneServedPath(mutationTargetPath, current);
 
-    // Bounded anchored preview (PH-WRITE-002): independent 100-line default
-    // plus a total byte cap; only retained complete rows become served.
-    const previewEnd = Math.min(newTexts.length, AUTO_READ_MAX_LINES);
-    const preview = renderLinesBounded(
+    // Bounded anchored preview (PH-WRITE-002).
+    const { text: previewText, servedRows: previewRows } = renderAutoReadPreview(
       anchorsAfter,
       newTexts,
-      0,
-      previewEnd,
-      AUTO_READ_MAX_BYTES,
+      mutationTargetPath,
     );
-    const evictedRows = serveLines(mutationTargetPath, preview.served);
-    let previewText = preview.text;
-    if (preview.truncated) {
-      previewText += `\n\n[Preview truncated at the ${AUTO_READ_MAX_BYTES / 1024}KB budget. Use read to see more.]`;
-    } else if (previewEnd < newTexts.length) {
-      previewText += `\n\n[Showing the first ${previewEnd} lines of ${newTexts.length}. Use read to see more.]`;
-    }
-    if (evictedRows > 0) {
-      previewText += servedWindowNotice(evictedRows);
-    }
 
-    emitMutationAfter(
-      mutationEventBase({
-        transactionId,
-        toolCallId,
-        path: mutationTargetPath,
-        operation: "write",
-        editCount: 1,
-        removedLines,
-        addedLines,
-        beforeSha256: checksumBefore,
-        afterSha256: afterChecksum,
-        outcome: "success",
-        warningCodes: warnings
-          .map((w) => /^\[(W_[A-Z0-9_]+)\]/.exec(w)?.[1])
-          .filter((c): c is string => Boolean(c)),
-      }),
-    );
     debugLog("write committed", { path: mutationTargetPath, warnings });
 
     const heading = isNew
@@ -452,14 +349,14 @@ async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition
       details: {
         revision: afterChecksum,
         totalLines: newTexts.length,
-        shownLines: preview.served.length,
+        shownLines: previewRows,
         created: isNew,
         hashline: hashlineDetails({
           outcome: "success",
           code: "OK",
           transactionId,
           fileSha256: afterChecksum,
-          servedRows: preview.served.length,
+          servedRows: previewRows,
           warnings,
         }),
       },

@@ -9,6 +9,27 @@
 
 import * as Diff from "diff";
 
+/** Dense intern table shared by both sequences: distinct strings ->
+ * consecutive small integers, so Myers diff compares with O(1) === instead
+ * of string equality. One table across both sides preserves cross-sequence
+ * identity — separate tables would alias distinct strings positionally. */
+export function internIds(
+  oldSeq: readonly string[],
+  newSeq: readonly string[],
+): [number[], number[]] {
+  const idByStr = new Map<string, number>();
+  let nextId = 1;
+  const toId = (s: string): number => {
+    let id = idByStr.get(s);
+    if (id === undefined) {
+      id = nextId++;
+      idByStr.set(s, id);
+    }
+    return id;
+  };
+  return [oldSeq.map(toId), newSeq.map(toId)];
+}
+
 /**
  * Returns newIndex -> oldIndex for lines that are equal in both sequences.
  * Lines not present in the map are new (allocated fresh); old lines that are

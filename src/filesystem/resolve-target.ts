@@ -6,11 +6,15 @@
  * symbolic link. Symlink loops are detected and reported as ELOOP.
  * Note: visitedSymlinks tracks visited paths (matching Node realpath semantics)
  * rather than (device, inode) pairs.
+ *
+ * Also re-exports the per-file mutation serialization helper so that
+ * filesystem callers have a single filesystem import surface.
  */
 
 import { lstat, readlink } from "fs/promises";
 import { dirname, join, parse, resolve, sep } from "path";
 import { errCode } from "../utils";
+export { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 
 export async function resolveTarget(path: string): Promise<string> {
   const absolutePath = resolve(path);

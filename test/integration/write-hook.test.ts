@@ -1,7 +1,7 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { withStateDir } from "../support/env";
-import { makeProject, runTool, textOf, writeFileAt, readFileAt } from "../support/tools";
-import { initHasher } from "../../src/anchors/hasher";
+import { makeProject, runTool, textOf, writeFileAt, readFileAt, anchorsFromRead, makeFakePi } from "../support/tools";
+
 import { resetStoreForTests, loadStore } from "../../src/state/database";
 import { resetServed, servedText } from "../../src/served/ledger";
 import { buildReadToolDef } from "../../src/tools/read";
@@ -15,33 +15,7 @@ const readTool = buildReadToolDef();
 const editTool = buildEditToolDef();
 const undoTool = buildUndoToolDef();
 
-interface FakePi {
-  on: (event: string, handler: (event: never, ctx: never) => unknown) => void;
-  handlers: Map<string, (event: never, ctx: never) => unknown>;
-}
-
-function makeFakePi(autoRead: { value: boolean }): FakePi {
-  const handlers = new Map();
-  return {
-    on(event, handler) {
-      handlers.set(event, handler);
-    },
-    handlers,
-  };
-}
-
-function anchorsFromRead(text: string): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const line of text.split("\n")) {
-    const match = line.match(/^([A-Za-z0-9]{4})│(.*)$/);
-    if (match) map.set(match[2]!, match[1]!);
-  }
-  return map;
-}
-
-beforeAll(async () => {
-  await initHasher();
-});
+;
 
 beforeEach(() => {
   withStateDir();
@@ -59,8 +33,8 @@ describe("write integration (spec §37, §38)", () => {
     const read = await runTool(readTool, { path: "a.ts" }, dir);
     const one = anchorsFromRead(textOf(read)).get("one")!;
     await runTool(editTool, { path: "a.ts", edits: [{ range: [one, one], lines: ["ONE"] }] }, dir);
-    const store = await loadStore();
-    expect(getUndoRecord(store, join(dir, "a.ts"))).toBeDefined();
+    await loadStore();
+    expect(getUndoRecord(join(dir, "a.ts"))).toBeDefined();
 
     const pi = makeFakePi({ value: true });
     registerWriteHook(pi as never, () => true);
@@ -74,7 +48,7 @@ describe("write integration (spec §37, §38)", () => {
       } as never,
       { cwd: dir } as never,
     );
-    expect(getUndoRecord(store, join(dir, "a.ts"))).toBeUndefined();
+    expect(getUndoRecord(join(dir, "a.ts"))).toBeUndefined();
     // Auto-read preview is appended.
     const content = (result as { content?: Array<{ text?: string }> })?.content ?? [];
     expect(content.some((entry) => entry.text?.includes("Auto-read"))).toBe(true);
@@ -86,8 +60,8 @@ describe("write integration (spec §37, §38)", () => {
     const read = await runTool(readTool, { path: "a.ts" }, dir);
     const one = anchorsFromRead(textOf(read)).get("one")!;
     await runTool(editTool, { path: "a.ts", edits: [{ range: [one, one], lines: ["ONE"] }] }, dir);
-    const store = await loadStore();
-    expect(getUndoRecord(store, join(dir, "a.ts"))).toBeDefined();
+    await loadStore();
+    expect(getUndoRecord(join(dir, "a.ts"))).toBeDefined();
 
     const pi = makeFakePi({ value: true });
     registerWriteHook(pi as never, () => true);
@@ -101,7 +75,7 @@ describe("write integration (spec §37, §38)", () => {
       } as never,
       { cwd: dir } as never,
     );
-    expect(getUndoRecord(store, join(dir, "a.ts"))).toBeDefined();
+    expect(getUndoRecord(join(dir, "a.ts"))).toBeDefined();
   });
 
   it("reconciles anchors after write and keeps only matching served lines", async () => {
@@ -167,9 +141,7 @@ describe("write integration (spec §37, §38)", () => {
       } as never,
       { cwd: dir } as never,
     );
-    const undo = await runTool(undoTool, { path: "a.ts" }, dir);
-    expect(undo.isError).toBe(true);
-    expect(textOf(undo)).toContain("[E_NO_UNDO]");
+    await expect(runTool(undoTool, { path: "a.ts" }, dir)).rejects.toThrow(/E_NO_UNDO/);
     expect(readFileAt(join(dir, "a.ts"))).toBe("ONE\ntwo\n");
   });
 });

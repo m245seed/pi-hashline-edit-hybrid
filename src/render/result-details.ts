@@ -3,15 +3,13 @@
  *
  * Every returned hashline result carries a `details.hashline` object. It
  * declares the result protocol, the canonical outcome, and the
- * render-then-serve exact-content marker that Sentinel uses to bypass live
- * content redaction (PS-SEC-011) and to classify the result without parsing
- * prose.
+ * render-then-serve exact-content marker.
  */
 
 import { getContextEpoch } from "../served/epoch";
-import { HASHLINE_PROTOCOL_ID, HASHLINE_RESULT_PROTOCOL } from "../integration/protocol";
+import { HASHLINE_PROTOCOL_ID, HASHLINE_RESULT_PROTOCOL } from "../constants";
 
-/** Canonical Sentinel outcome vocabulary (mirrors Sentinel, no import). */
+/** Canonical outcome vocabulary. */
 export type HashlineOutcome =
   | "success"
   | "no_change"
@@ -33,8 +31,6 @@ export interface HashlineResultDetails {
   contextEpoch: number;
   /** Number of complete exact rows retained in the final result. */
   servedRows?: number;
-  /** Alias consumed by Sentinel's exact-output marker (§19.1). */
-  servedRowCount?: number;
   transactionId?: string;
   fileSha256?: string;
   warnings?: string[];
@@ -65,7 +61,6 @@ export function hashlineDetails(input: HashlineDetailsInput): HashlineResultDeta
   };
   if (input.servedRows !== undefined) {
     details.servedRows = input.servedRows;
-    details.servedRowCount = input.servedRows;
   }
   if (input.transactionId !== undefined) details.transactionId = input.transactionId;
   if (input.fileSha256 !== undefined) details.fileSha256 = input.fileSha256;

@@ -1,14 +1,11 @@
 import { mkdirSync, writeFileSync, readdirSync } from "fs";
-import { join } from "path";
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { withStateDir } from "../support/env";
-import { initHasher } from "../../src/anchors/hasher";
+
 import { loadStore, resetStoreForTests, shutdownStore, isCorruptionError, withBusyRetry, withBusyRetryAsync } from "../../src/state/database";
 import { statePath, configDir } from "../../src/paths";
 
-beforeAll(async () => {
-  await initHasher();
-});
+;
 
 beforeEach(() => {
   withStateDir();

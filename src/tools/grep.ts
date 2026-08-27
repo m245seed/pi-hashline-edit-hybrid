@@ -21,10 +21,10 @@ import { toCwd } from "../paths";
 import { abortIf, isRec, rejectUnknownFields } from "../utils";
 import { resolveTarget } from "../filesystem/resolve-target";
 import { loadAnchoredFile } from "../mutation/transaction";
-import { renderLinesUnserved } from "../render/hashline";
+import { renderLinesUnserved } from "../render/engine";
 import { serveLines, servedWindowNotice } from "../served/ledger";
 import { hashlineDetails } from "../render/result-details";
-import { HASHLINE_PROTOCOL_ID } from "../integration/protocol";
+import { HASHLINE_PROTOCOL_ID } from "../constants";
 const GREP_ROOT_KEYS = new Set(["pattern", "path", "glob", "ignoreCase", "literal", "context", "limit"]);
 
 
@@ -395,7 +395,6 @@ function runRipgrep(options: RunOptions): Promise<Map<string, LineEntry[]>> {
     let currentFile = "";
     let isFirstLine = true;
     let matchCount = 0;
-    let limitReached = false;
 
     child.stderr?.on("data", (chunk: Buffer) => {
       stderr += chunk.toString();
@@ -439,7 +438,6 @@ function runRipgrep(options: RunOptions): Promise<Map<string, LineEntry[]>> {
         if (event.type === "match") {
           matchCount++;
           if (matchCount >= limit) {
-            limitReached = true;
             stopChild();
           }
         }
@@ -464,7 +462,6 @@ function runRipgrep(options: RunOptions): Promise<Map<string, LineEntry[]>> {
         );
         return;
       }
-      void limitReached;
       settle(() => resolveFn(fileEntries));
     });
   });

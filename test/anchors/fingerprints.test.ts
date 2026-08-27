@@ -1,14 +1,12 @@
-import { beforeAll, describe, expect, it } from "vitest";
-import { initHasher } from "../../src/anchors/hasher";
+import { describe, expect, it } from "vitest"
+
 import {
   lineFingerprintHex,
   decodeFingerprintHexes,
   FINGERPRINT_BYTES,
 } from "../../src/anchors/fingerprints";
 
-beforeAll(async () => {
-  await initHasher();
-});
+;
 
 describe("fingerprints (spec §4.2)", () => {
   it("hashes exact line text; trailing whitespace is significant", () => {

@@ -1,47 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { withStateDir } from "../support/env";
+import { makeFakePi } from "../support/tools";
 import factory from "../../index";
-
-interface RegisteredTool {
-  name: string;
-  description?: string;
-  parameters: unknown;
-  execute: (...args: never[]) => unknown;
-}
-
-interface FakePi {
-  tools: Map<string, RegisteredTool>;
-  commands: Map<string, unknown>;
-  handlers: Map<string, (...args: never[]) => unknown>;
-  on: (event: string, handler: (...args: never[]) => unknown) => void;
-  registerTool: (tool: RegisteredTool) => void;
-  registerCommand: (name: string, options: unknown) => void;
-}
-
-function makePi(): FakePi {
-  const tools = new Map<string, RegisteredTool>();
-  const commands = new Map<string, unknown>();
-  const handlers = new Map<string, (...args: never[]) => unknown>();
-  return {
-    tools,
-    commands,
-    handlers,
-    on(event, handler) {
-      handlers.set(event, handler);
-    },
-    registerTool(tool) {
-      tools.set(tool.name, tool);
-    },
-    registerCommand(name, options) {
-      commands.set(name, options);
-    },
-  };
-}
 
 describe("extension registration", () => {
   it("registers the six hybrid tools and lifecycle hooks", () => {
     withStateDir();
-    const pi = makePi();
+    const pi = makeFakePi();
     factory(pi as never);
 
     expect([...pi.tools.keys()].sort()).toEqual(["edit", "grep", "insert", "read", "undo", "write"]);

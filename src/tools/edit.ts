@@ -15,40 +15,25 @@
  */
 
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { HASHLINE_PROTOCOL_ID } from "../integration/protocol";
 import { Type } from "typebox";
-import { toCwd } from "../paths";
-import { abortIf, debugLog, sha256Hex } from "../utils";
-import { withFileMutationQueue } from "../filesystem/concurrency";
-import { resolveTarget } from "../filesystem/resolve-target";
-import { getLargeEditGuard } from "../constants";
+import { abortIf } from "../utils";
+import { withFileMutationQueue } from "../filesystem/resolve-target";
+import { resolveMutationTarget, commitAndRenderMutation } from "./shared";
+import { getLargeEditGuard, HASHLINE_PROTOCOL_ID } from "../constants";
 import {
   validateEditRequest,
   type EditRequest,
 } from "../mutation/validate";
-import {
-  buildAnchorIndex,
-  resolveAnchor,
-  staleAnchorMessage,
-  reversedRangeMessage,
-} from "../mutation/resolve";
+import { staleAnchorMessage, reversedRangeMessage } from "../mutation/resolve";
 import {
   applyTransaction,
   type EditOp,
 } from "../mutation/apply";
-import {
-  loadAnchoredFile,
-  commitMutation,
-  encodeAfterBytes,
-  anchorSpaceWarning,
-  mixedEndingsWarning,
-  newTransactionIdFor,
-} from "../mutation/transaction";
+import { loadAnchoredFile } from "../mutation/transaction";
 import { checkRangeServed, formatRangeFailure } from "../served/authorize";
-import { renderDiff } from "../render/diff";
-import { serveLines, servedWindowNotice } from "../served/ledger";
 import {
   detectBoundaryDuplication,
+  type BoundaryDupFinding,
   boundaryDupRejection,
   boundaryDupWarning,
   computePostTransactionTexts,
@@ -56,16 +41,8 @@ import {
   largeDestructiveRejection,
 } from "../render/warnings";
 import { hashlineDetails } from "../render/result-details";
-import { isFrozen, frozenRejection } from "../integration/freeze";
-import {
-  emitMutationBefore,
-  emitMutationAfter,
-  emitMutationRejected,
-  mutationEventBase,
-} from "../integration/ipc";
-import { fingerprintHexes } from "../anchors/fingerprints";
-import type { MutationMetrics } from "./mutation-types";
-export type { MutationMetrics } from "./mutation-types";
+import type { MutationMetrics } from "./shared";
+export type { MutationMetrics } from "./shared";
 
 export interface EditToolDetails {
   diff?: string;
@@ -156,40 +133,13 @@ export function buildEditToolDef(): ToolDefinition<any, EditToolDetails> {
 
     async execute(toolCallId, params, signal, _onUpdate, ctx) {
       const request = validateEditRequest(params);
-      const absolutePath = toCwd(request.path, ctx.cwd);
-      const mutationTargetPath = await resolveTarget(absolutePath);
-      const rejectionTxId = newTransactionIdFor();
-      let beforeSha = "";
-      try {
-        return await runEdit({
-          toolCallId,
-          request,
-          mutationTargetPath,
-          signal,
-          trackBeforeSha: (sha) => {
-            beforeSha = sha;
-          },
-        });
-      } catch (error) {
-        // §31.11: report structured rejections without depending on a reply.
-        const message = error instanceof Error ? error.message : String(error);
-        const code = /\[(E_[A-Z0-9_]+)\]/.exec(message)?.[1] ?? "E_UNKNOWN";
-        emitMutationRejected(
-          mutationEventBase({
-            transactionId: rejectionTxId,
-            toolCallId,
-            path: mutationTargetPath,
-            operation: "edit",
-            editCount: request.edits.length,
-            removedLines: 0,
-            addedLines: 0,
-            beforeSha256: beforeSha,
-            outcome: code === "E_ABORTED" ? "cancelled" : "rejected",
-            warningCodes: [code],
-          }),
-        );
-        throw error;
-      }
+      const mutationTargetPath = await resolveMutationTarget(request.path, ctx.cwd);
+      return runEdit({
+        toolCallId,
+        request,
+        mutationTargetPath,
+        signal,
+      });
     },
   };
 }
@@ -199,28 +149,22 @@ interface RunEditInput {
   request: EditRequest;
   mutationTargetPath: string;
   signal?: AbortSignal;
-  trackBeforeSha: (sha: string) => void;
 }
 
 async function runEdit(input: RunEditInput): Promise<ReturnType<ToolDefinition<any, EditToolDetails>["execute"]>> {
-  const { toolCallId, request, mutationTargetPath, signal, trackBeforeSha } = input;
+  const { request, mutationTargetPath, signal } = input;
   return withFileMutationQueue(mutationTargetPath, async () => {
-    // PH §12.5: destructive tools reject while a Sentinel freeze is active.
-    if (isFrozen()) {
-      throw new Error(frozenRejection("edit"));
-    }
     abortIf(signal);
     const file = await loadAnchoredFile(mutationTargetPath, request.path);
-    trackBeforeSha(file.checksum);
-    const anchorIndex = buildAnchorIndex(file.anchors);
+    const anchorIndex = new Map<string, number>(file.anchors.map((a, i) => [a, i]));
 
     const ops: EditOp[] = [];
     for (let i = 0; i < request.edits.length; i++) {
       const item = request.edits[i]!;
       const startAnchor = item.range[0];
       const endAnchor = item.range[1];
-      const start = resolveAnchor(anchorIndex, startAnchor);
-      const end = resolveAnchor(anchorIndex, endAnchor);
+      const start = anchorIndex.get(startAnchor);
+      const end = anchorIndex.get(endAnchor);
       if (start === undefined) {
         throw new Error(
           staleAnchorMessage(
@@ -283,192 +227,63 @@ async function runEdit(input: RunEditInput): Promise<ReturnType<ToolDefinition<a
       { finalNewline: request.final_newline },
     );
 
-    const beforeRevision = file.checksum;
-    const transactionId = newTransactionIdFor();
-
-    const warnings: string[] = [];
-    if (result.unusedFinalNewline) {
-      warnings.push(
-        `[W_UNUSED_OPTION] "final_newline" was specified but no edit reaches the end of the file; it was not applied.`,
-      );
-    }
-    const retiredAfter = new Set([...file.retired, ...result.retiredAdded]);
-    const pressure = anchorSpaceWarning(new Set(result.anchors).size, retiredAfter.size);
-    if (pressure) warnings.push(pressure);
-    const mixed = mixedEndingsWarning(file.doc, result.metrics.linesAdded);
-    if (mixed) warnings.push(mixed);
-
-    if (result.noop) {
-      const metrics: MutationMetrics = {
-        classification: "noop",
-        edits_attempted: result.metrics.editsAttempted,
-        edits_applied: 0,
-        edits_noop: result.metrics.editsNoop,
-        lines_added: 0,
-        lines_removed: 0,
-        warnings: warnings.length,
-        before_revision: beforeRevision,
-        after_revision: beforeRevision,
-        transaction_id: null,
-      };
-      return {
-        content: [{ type: "text", text: "No changes made." }],
-        details: {
-          metrics,
-          hashline: hashlineDetails({
-            outcome: "no_change",
-            code: "NO_CHANGE",
-            fileSha256: beforeRevision,
-            servedRows: 0,
-          }),
-        },
-      };
-    }
-
-    // ── Safety preflights (run before commit; PH-EDIT-001/006) ─────────
-    const sortedOps = [...ops].sort((a, b) => a.start - b.start);
-    const removedTotal = result.metrics.linesRemoved;
-    const addedTotal = result.metrics.linesAdded;
-
-    // Large destructive guard (PH-EDIT-006..008), per edit for a precise
-    // operation index (§31.10).
-    if (request.allow_large_change !== true) {
-      for (const op of sortedOps) {
-        const removed = op.end - op.start + 1;
-        const added = op.lines.length;
-        const guard = getLargeEditGuard();
-        if (isLargeDestructiveChange(removed, added, guard)) {
-          throw new Error(
-            largeDestructiveRejection(request.path, removed, added, guard),
-          );
-        }
-      }
-    }
-
-    // Boundary-duplicate detection (PH-EDIT-001..005) against the lines
-    // that will be adjacent AFTER the whole transaction applies.
-    const { texts: postTexts, insertPositions } = computePostTransactionTexts(
-      file.texts,
-      sortedOps,
-    );
-    const boundaryFindings: Array<{ requestIndex: number; findings: ReturnType<typeof detectBoundaryDuplication> }> = [];
-    for (let i = 0; i < sortedOps.length; i++) {
-      const op = sortedOps[i]!;
-      const pos = insertPositions[i]!;
-      const before = postTexts.slice(0, pos);
-      const after = postTexts.slice(pos + op.lines.length);
-      const findings = detectBoundaryDuplication(op.lines, before, after);
-      if (findings.length > 0) {
-        boundaryFindings.push({ requestIndex: op.requestIndex, findings });
-      }
-    }
-    if (boundaryFindings.length > 0) {
-      if (request.allow_boundary_duplicate !== true) {
-        const first = boundaryFindings[0]!;
-        throw new Error(
-          boundaryDupRejection(request.path, first.requestIndex, first.findings),
-        );
-      }
-      // Escape hatch used: apply literally but flag it for review (§55).
-      for (const { requestIndex, findings } of boundaryFindings) {
-        warnings.push(boundaryDupWarning(request.path, requestIndex, findings));
-      }
-    }
-
-    const afterRaw = encodeAfterBytes(result.document);
-    const afterChecksum = sha256Hex(afterRaw);
-
-    emitMutationBefore(
-      mutationEventBase({
-        transactionId,
-        toolCallId,
-        path: mutationTargetPath,
-        operation: "edit",
-        editCount: ops.length,
-        removedLines: removedTotal,
-        addedLines: addedTotal,
-        beforeSha256: beforeRevision,
-        afterSha256: afterChecksum,
-        outcome: "success",
-        warningCodes: [],
-      }),
-    );
-
-    abortIf(signal);
-    await commitMutation({
+    return commitAndRenderMutation({
+      tool: "edit",
+      displayPath: request.path,
       realPath: mutationTargetPath,
-      label: request.path,
-      rawBefore: file.raw,
-      checksumBefore: beforeRevision,
-      docBefore: file.doc,
-      anchorsBefore: file.anchors,
-      fingerprintsBefore: file.fingerprints,
-      retiredBefore: file.retired,
-      rawAfter: afterRaw,
-      checksumAfter: afterChecksum,
-      docAfter: result.document,
-      anchorsAfter: result.anchors,
-      fingerprintsAfter: fingerprintHexes(
-        result.document.lines.map((line) => line.text),
-      ),
-      retiredAfter,
-      transactionId,
-      signal,
+      file,
+      result,
       expectedRevision: request.expected_revision,
-      keepUndo: true,
-      warnings,
-    });
+      signal,
+      preflight: (addWarning) => {
+        // ── Safety preflights (run before commit; PH-EDIT-001/006) ─────────
+        const sortedOps = [...ops].sort((a, b) => a.start - b.start);
 
-    const diff = renderDiff(result.diffRows);
-    const evictedRows = serveLines(mutationTargetPath, diff.served);
-    let diffText = diff.text;
-    if (evictedRows > 0) diffText += servedWindowNotice(evictedRows);
-    const metrics: MutationMetrics = {
-      classification: result.metrics.classification,
-      edits_attempted: result.metrics.editsAttempted,
-      edits_applied: result.metrics.editsApplied,
-      edits_noop: result.metrics.editsNoop,
-      lines_added: result.metrics.linesAdded,
-      lines_removed: result.metrics.linesRemoved,
-      warnings: warnings.length,
-      before_revision: beforeRevision,
-      after_revision: afterChecksum,
-      transaction_id: transactionId,
-    };
-    const text = warnings.length > 0 ? `${diffText}\n\n${warnings.join("\n")}` : diffText;
-    emitMutationAfter(
-      mutationEventBase({
-        transactionId,
-        toolCallId,
-        path: mutationTargetPath,
-        operation: "edit",
-        editCount: ops.length,
-        removedLines: removedTotal,
-        addedLines: addedTotal,
-        beforeSha256: beforeRevision,
-        afterSha256: afterChecksum,
-        outcome: "success",
-        warningCodes: warnings
-          .map((w) => /^\[(W_[A-Z0-9_]+)\]/.exec(w)?.[1])
-          .filter((c): c is string => Boolean(c)),
-      }),
-    );
-    debugLog("edit committed", { path: mutationTargetPath, metrics, warnings });
+        // Large destructive guard (PH-EDIT-006..008), per edit for a precise
+        // operation index (§31.10).
+        if (request.allow_large_change !== true) {
+          for (const op of sortedOps) {
+            const removed = op.end - op.start + 1;
+            const added = op.lines.length;
+            const guard = getLargeEditGuard();
+            if (isLargeDestructiveChange(removed, added, guard)) {
+              throw new Error(
+                largeDestructiveRejection(request.path, removed, added, guard),
+              );
+            }
+          }
+        }
 
-    return {
-      content: [{ type: "text", text }],
-      details: {
-        diff: diffText,
-        metrics,
-        hashline: hashlineDetails({
-          outcome: "success",
-          code: "OK",
-          transactionId,
-          fileSha256: afterChecksum,
-          servedRows: diff.servedRows,
-          warnings,
-        }),
+        // Boundary-duplicate detection (PH-EDIT-001..005) against the lines
+        // that will be adjacent AFTER the whole transaction applies.
+        const { texts: postTexts, insertPositions } = computePostTransactionTexts(
+          file.texts,
+          sortedOps,
+        );
+        const boundaryFindings: Array<{ requestIndex: number; findings: BoundaryDupFinding[] }> = [];
+        for (let i = 0; i < sortedOps.length; i++) {
+          const op = sortedOps[i]!;
+          const pos = insertPositions[i]!;
+          const before = postTexts.slice(0, pos);
+          const after = postTexts.slice(pos + op.lines.length);
+          const findings = detectBoundaryDuplication(op.lines, before, after);
+          if (findings.length > 0) {
+            boundaryFindings.push({ requestIndex: op.requestIndex, findings });
+          }
+        }
+        if (boundaryFindings.length > 0) {
+          if (request.allow_boundary_duplicate !== true) {
+            const first = boundaryFindings[0]!;
+            throw new Error(
+              boundaryDupRejection(request.path, first.requestIndex, first.findings),
+            );
+          }
+          // Escape hatch used: apply literally but flag it for review (§55).
+          for (const { requestIndex, findings } of boundaryFindings) {
+            addWarning(boundaryDupWarning(request.path, requestIndex, findings));
+          }
+        }
       },
-    };
+    });
   });
 }

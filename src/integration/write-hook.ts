@@ -18,14 +18,12 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { toCwd } from "../paths";
-import { resolveTarget } from "../filesystem/resolve-target";
-import { withFileMutationQueue } from "../filesystem/concurrency";
+import { resolveTarget, withFileMutationQueue } from "../filesystem/resolve-target";
 import { loadAnchoredFile } from "../mutation/transaction";
 import { clearUndoRecord } from "../state/undo";
-import { pruneServedPath, serveLines, servedWindowNotice } from "../served/ledger";
-import { renderLinesBounded } from "../render/hashline";
-import { AUTO_READ_MAX_LINES, AUTO_READ_MAX_BYTES } from "../constants";
-import { HASHLINE_RESULT_PROTOCOL } from "./protocol";
+import { pruneServedPath } from "../served/ledger";
+import { HASHLINE_RESULT_PROTOCOL } from "../constants";
+import { renderAutoReadPreview } from "../tools/shared";
 
 function isOwnHashlineWrite(event: { details?: unknown }): boolean {
   const details = event.details as { hashline?: { protocol?: unknown } } | undefined;
@@ -60,24 +58,11 @@ export function registerWriteHook(
         pruneServedPath(realPath, current);
 
         if (!getAutoRead()) return;
-        const end = Math.min(file.texts.length, AUTO_READ_MAX_LINES);
-        const preview = renderLinesBounded(
+        const { text: previewText } = renderAutoReadPreview(
           file.anchors,
           file.texts,
-          0,
-          end,
-          AUTO_READ_MAX_BYTES,
+          realPath,
         );
-        const evictedRows = serveLines(realPath, preview.served);
-        let previewText = preview.text;
-        if (preview.truncated) {
-          previewText += `\n\n[Preview truncated at the ${AUTO_READ_MAX_BYTES / 1024}KB budget. Use read to see more.]`;
-        } else if (end < file.texts.length) {
-          previewText += `\n\n[Showing the first ${end} lines of ${file.texts.length}.]`;
-        }
-        if (evictedRows > 0) {
-          previewText += servedWindowNotice(evictedRows);
-        }
         return {
           content: [
             ...(event.content ?? []),

@@ -17,7 +17,6 @@ import {
   rename,
   rm,
   stat,
-  type FileHandle,
 } from "fs/promises";
 import { dirname, join } from "path";
 import { MAX_BYTES, STALE_TEMP_MS } from "../constants";

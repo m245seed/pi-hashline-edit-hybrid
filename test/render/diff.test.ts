@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { renderDiff } from "../../src/render/diff";
+import { renderDiff } from "../../src/render/engine";
 import { resetServed, servedText, serveLines } from "../../src/served/ledger";
 import type { DiffRow } from "../../src/mutation/apply";
 const PATH = "/p/f.ts";

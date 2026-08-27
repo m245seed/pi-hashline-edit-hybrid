@@ -1,15 +1,9 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { existsSync } from "fs";
 import { join } from "path";
 import { withStateDir } from "../support/env";
-import {
-  makeProject,
-  readFileAt,
-  runTool,
-  textOf,
-  writeFileAt,
-} from "../support/tools";
-import { initHasher } from "../../src/anchors/hasher";
+import { makeProject, readFileAt, runTool, textOf, writeFileAt, anchorsFromRead } from "../support/tools";
+
 import { resetStoreForTests } from "../../src/state/database";
 import { resetServed, servedText } from "../../src/served/ledger";
 import { buildReadToolDef } from "../../src/tools/read";
@@ -20,18 +14,7 @@ const readTool = buildReadToolDef();
 const writeTool = buildWriteToolDef();
 const undoTool = buildUndoToolDef();
 
-function anchorsFromRead(text: string): Map<string, string> {
-  const anchors = new Map<string, string>();
-  for (const line of text.split("\n")) {
-    const match = line.match(/^([A-Za-z0-9]{4})│(.*)$/);
-    if (match) anchors.set(match[2]!, match[1]!);
-  }
-  return anchors;
-}
-
-beforeAll(async () => {
-  await initHasher();
-});
+;
 
 beforeEach(() => {
   withStateDir();

@@ -1,6 +1,6 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { withStateDir } from "../support/env";
-import { initHasher } from "../../src/anchors/hasher";
+
 import {
   loadStore,
   requireStore,
@@ -11,68 +11,30 @@ import {
   getContextEpoch,
   resetContextEpoch,
 } from "../../src/served/epoch";
-import {
-  addFreeze,
-  clearFreezesForTests,
-  isFrozen,
-} from "../../src/integration/freeze";
 import { registerSession } from "../../src/integration/session";
-
-interface FakePi {
-  on: (event: string, handler: (...args: never[]) => unknown) => void;
-  registerCommand: (name: string, options: unknown) => void;
-  handlers: Map<string, (...args: never[]) => unknown>;
-  commands: Map<string, unknown>;
-}
-
-function makeFakePi(): FakePi {
-  const handlers = new Map<string, (...args: never[]) => unknown>();
-  const commands = new Map<string, unknown>();
-  return {
-    on(event, handler) {
-      handlers.set(event, handler);
-    },
-    registerCommand(name, options) {
-      commands.set(name, options);
-    },
-    handlers,
-    commands,
-  };
-}
+import { makeFakePi } from "../support/tools";
 
 function makeCtx(): { ui: { notify: (msg: string) => void }; cwd: string } {
   return { ui: { notify: () => {} }, cwd: "/tmp" };
 }
 
-beforeAll(async () => {
-  await initHasher();
-});
+;
 
 beforeEach(() => {
   withStateDir();
   resetServed();
   resetContextEpoch();
-  clearFreezesForTests();
 });
 
 afterEach(async () => {
-  clearFreezesForTests();
   await resetStoreForTests();
   resetContextEpoch();
 });
 
 describe("session lifecycle (spec §8.1, PH-CONTEXT-003)", () => {
-  it("session_start resets served authorization and restores persisted freezes", async () => {
+  it("session_start resets served authorization", async () => {
     await loadStore();
-    addFreeze({
-      freezeId: "frz_boot",
-      reasonCode: "SENTINEL_DEGRADED",
-      receivedAt: new Date().toISOString(),
-    });
-    // Simulate a reload: in-memory freeze and served state are gone.
-    clearFreezesForTests();
     serveLine("/gone/f.ts", "Ab12", "stale authorization");
-    expect(isFrozen()).toBe(false);
 
     const pi = makeFakePi();
     registerSession(pi as never, { value: true });
@@ -81,8 +43,6 @@ describe("session lifecycle (spec §8.1, PH-CONTEXT-003)", () => {
       makeCtx() as never,
     );
 
-    // Freeze restored (spec §12.5): a reload must not restore mutations.
-    expect(isFrozen()).toBe(true);
     // Served authorization is session-scoped: the ledger was reset.
     expect(servedText("/gone/f.ts", "Ab12")).toBeUndefined();
   });

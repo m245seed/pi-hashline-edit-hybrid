@@ -10,7 +10,7 @@
  */
 
 import { randomUUID } from "crypto";
-import { cachedPrepare, prepareCached, requireStore, withBusyRetry, type Store } from "./database";
+import { cachedPrepare, withBusyRetry } from "./database";
 import {
   decodeAnchorsBlob,
   decodeFingerprintsBlob,
@@ -96,7 +96,6 @@ export function newTransactionId(): string {
 }
 
 export function insertPendingTransaction(entry: PendingTransaction): void {
-  const store = requireStore();
   const before = encodeState(entry.before);
   const after = encodeState(entry.after);
   withBusyRetry(() =>
@@ -136,9 +135,8 @@ export function insertPendingTransaction(entry: PendingTransaction): void {
   );
 }
 
-export function listPendingTransactions(store: Store): PendingTransaction[] {
-  const rows = prepareCached(
-    store,
+export function listPendingTransactions(): PendingTransaction[] {
+  const rows = cachedPrepare(
     `SELECT * FROM pending_transactions ORDER BY created_at`,
   ).all() as unknown as PendingRow[];
   return rows.map((row) => ({
@@ -168,9 +166,9 @@ export function listPendingTransactions(store: Store): PendingTransaction[] {
   }));
 }
 
-export function deletePendingTransaction(store: Store, transactionId: string): void {
+export function deletePendingTransaction(transactionId: string): void {
   withBusyRetry(() =>
-    prepareCached(store, `DELETE FROM pending_transactions WHERE transaction_id = ?`).run(
+    cachedPrepare(`DELETE FROM pending_transactions WHERE transaction_id = ?`).run(
       transactionId,
     ),
   );

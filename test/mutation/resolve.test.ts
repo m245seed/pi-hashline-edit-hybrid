@@ -1,7 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  buildAnchorIndex,
-  resolveAnchor,
   staleAnchorMessage,
   reversedRangeMessage,
 } from "../../src/mutation/resolve";
@@ -15,14 +13,14 @@ describe("anchor resolution (spec §10)", () => {
   const anchors = ["A000", "A001", "A002", "A003"];
 
   it("resolves anchors by identity, not position", () => {
-    const index = buildAnchorIndex(anchors);
-    expect(resolveAnchor(index, "A002")).toBe(2);
-    expect(resolveAnchor(index, "A000")).toBe(0);
+    const index = new Map(anchors.map((a, i) => [a, i] as [string, number]));
+    expect(index.get("A002")).toBe(2);
+    expect(index.get("A000")).toBe(0);
   });
 
   it("does not resolve unknown anchors", () => {
-    const index = buildAnchorIndex(anchors);
-    expect(resolveAnchor(index, "Z999")).toBeUndefined();
+    const index = new Map(anchors.map((a, i) => [a, i] as [string, number]));
+    expect(index.get("Z999")).toBeUndefined();
   });
 
   it("stale anchor messages serve fresh context", () => {

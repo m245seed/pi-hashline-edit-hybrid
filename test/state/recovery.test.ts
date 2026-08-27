@@ -1,8 +1,8 @@
 import { writeFile, mkdir } from "fs/promises";
 import { join } from "path";
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { makeTmpDir, withStateDir } from "../support/env";
-import { initHasher } from "../../src/anchors/hasher";
+
 import { sha256Hex } from "../../src/utils";
 import { resetStoreForTests, loadStore, requireStore } from "../../src/state/database";
 import { runRecovery } from "../../src/state/recovery";
@@ -10,9 +10,7 @@ import { insertPendingTransaction, newTransactionId, type PendingTransaction } f
 import { getSnapshot } from "../../src/state/snapshots";
 import { getUndoRecord } from "../../src/state/undo";
 
-beforeAll(async () => {
-  await initHasher();
-});
+;
 
 beforeEach(() => {
   withStateDir();
@@ -57,7 +55,7 @@ describe("crash recovery (spec §31)", () => {
     const path = join(dir, "a.ts");
     const beforeHex = sha256Hex(Buffer.from("one\ntwo\n", "utf-8"));
     await writeFile(path, "one\ntwo\n", "utf-8");
-    const store = await loadStore();
+    await loadStore();
     insertPendingTransaction(pendingFor(path, beforeHex, "c".repeat(64), newTransactionId()));
 
     const summary = await runRecovery();
@@ -71,18 +69,18 @@ describe("crash recovery (spec §31)", () => {
     const path = join(dir, "a.ts");
     const afterHex = sha256Hex(Buffer.from("one\nTHREE\n", "utf-8"));
     await writeFile(path, "one\nTHREE\n", "utf-8");
-    const store = await loadStore();
+    await loadStore();
     const id = newTransactionId();
     insertPendingTransaction(pendingFor(path, "b".repeat(64), afterHex, id));
 
     const summary = await runRecovery();
     expect(summary.promoted).toBe(1);
-    const snap = getSnapshot(requireStore(), path);
+    const snap = getSnapshot(path);
     expect(snap?.rawChecksum).toBe(afterHex);
     expect(snap?.anchors).toEqual(["A000", "C002"]);
     expect(snap?.retired).toEqual(new Set(["A001"]));
     // Undo entry is created from the journal payload.
-    const undo = getUndoRecord(requireStore(), path);
+    const undo = getUndoRecord(path);
     expect(undo?.beforeBytes.toString()).toBe("one\ntwo\n");
     expect(undo?.afterChecksum).toBe(afterHex);
     expect(requireStore().db.prepare("SELECT COUNT(*) AS n FROM pending_transactions").get()!.n).toBe(0);
@@ -92,21 +90,21 @@ describe("crash recovery (spec §31)", () => {
     const dir = makeTmpDir("rec-");
     const path = join(dir, "a.ts");
     await writeFile(path, "COMPLETELY DIFFERENT\n", "utf-8");
-    const store = await loadStore();
+    await loadStore();
     insertPendingTransaction(pendingFor(path, "b".repeat(64), "c".repeat(64), newTransactionId()));
 
     const summary = await runRecovery();
     expect(summary.diverged).toBe(1);
     expect(summary.warnings.some((w) => w.includes("W_STATE_RECOVERED"))).toBe(true);
     expect(requireStore().db.prepare("SELECT COUNT(*) AS n FROM pending_transactions").get()!.n).toBe(0);
-    expect(getUndoRecord(requireStore(), path)).toBeUndefined();
+    expect(getUndoRecord(path)).toBeUndefined();
   });
 
   it("handles a deleted file as divergence", async () => {
     const dir = makeTmpDir("rec-");
     const path = join(dir, "gone.ts");
     await mkdir(dir, { recursive: true });
-    const store = await loadStore();
+    await loadStore();
     insertPendingTransaction(pendingFor(path, "b".repeat(64), "c".repeat(64), newTransactionId()));
     const summary = await runRecovery();
     expect(summary.diverged).toBe(1);

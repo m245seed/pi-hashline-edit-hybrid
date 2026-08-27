@@ -1,7 +1,7 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { withStateDir } from "../support/env";
 import { makeProject, runTool, textOf, writeFileAt } from "../support/tools";
-import { initHasher } from "../../src/anchors/hasher";
+
 import { resetStoreForTests } from "../../src/state/database";
 import { resetServed, servedText } from "../../src/served/ledger";
 import { buildGrepToolDef } from "../../src/tools/grep";
@@ -13,9 +13,7 @@ import { mkdirSync } from "fs";
 const grepTool = buildGrepToolDef();
 const editTool = buildEditToolDef();
 
-beforeAll(async () => {
-  await initHasher();
-});
+;
 
 beforeEach(() => {
   withStateDir();

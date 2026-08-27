@@ -24,7 +24,7 @@ export const ERROR_CODES = [
   "E_STATE_CORRUPT",
   "E_ANCHOR_SPACE_LOW",
   "E_ABORTED",
-  // Stable rejection codes required by the Sentinel integration (spec §31.10).
+  // Stable rejection codes (spec §31.10).
   "E_ANCHOR_NOT_SERVED",
   "E_RANGE_REVERSED",
   "E_RANGE_OVERLAP",
@@ -34,7 +34,6 @@ export const ERROR_CODES = [
   "E_LARGE_DESTRUCTIVE_EDIT",
   "E_FILE_CHANGED",
   "E_LINE_TOO_LARGE",
-  "E_FROZEN",
   "E_CONTEXT_EPOCH_STALE",
 ] as const;
 

@@ -1,5 +1,4 @@
 import { performance } from "perf_hooks";
-import { initHasher, getH } from "../src/anchors/hasher.ts";
 import { AnchorAllocator } from "../src/anchors/allocator.ts";
 import { fingerprintHexes } from "../src/anchors/fingerprints.ts";
 import { reconcileState } from "../src/anchors/reconcile.ts";
@@ -7,7 +6,7 @@ import { alignSequences } from "../src/anchors/sequence-map.ts";
 import { splitTextLines, joinTextLines } from "../src/document/lines.ts";
 import { looksBinary, decodeUtf8Strict } from "../src/document/encoding.ts";
 import { detectBoundaryDuplication } from "../src/render/warnings.ts";
-import { applyOutputBudget } from "../src/render/budget.ts";
+import { applyOutputBudget } from "../src/render/engine.ts";
 import { applyTransaction } from "../src/mutation/apply.ts";
 import { reconcileServed, serveLines, resetServed } from "../src/served/ledger.ts";
 import { checkRangeServed } from "../src/served/authorize.ts";
@@ -25,9 +24,6 @@ import { listPendingTransactions } from "../src/state/transaction-journal.ts";
 import { join } from "path";
 import { rmSync } from "fs";
 import { randomUUID } from "crypto";
-
-await initHasher();
-console.log(`Hasher ${getH().h32 ? 'h32 optimized' : 'fallback'} ready`);
 
 function fmt(n:number){ return n < 1 ? n.toFixed(2)+' ms' : n < 100 ? n.toFixed(1)+' ms' : Math.round(n)+' ms'; }
 function bench(name:string, fn:()=>void, iters=3){
@@ -137,7 +133,7 @@ for(const N of [1_000, 10_000]){
   },2);
   await benchAsync(`grep limit100`, async()=> await runTool(grepTool,{pattern:"line", path:".", limit:100},proj),2);
   const store=requireStore();
-  const avg=bench(`DB listPending`, ()=> listPendingTransactions(store),5);
+  const avg=bench(`DB listPending`, ()=> listPendingTransactions(),5);
   console.log(`  DB listPending ${(avg*1000).toFixed(1)} µs`);
   rmSync(proj,{recursive:true,force:true}); rmSync(stateDir,{recursive:true,force:true}); await resetStoreForTests();
   const mem=process.memoryUsage();

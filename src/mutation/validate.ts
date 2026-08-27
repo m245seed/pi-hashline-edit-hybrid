@@ -74,7 +74,7 @@ export interface InsertRequest {
 export const DISPLAY_LIKE_RE = new RegExp(`^[ +-]?${ANCHOR_CLASS}${"│"}`);
 
 const CONTROL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
-const LONE_SURROGATE_RE =
+export const LONE_SURROGATE_RE =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 export function assertAnchor(ref: unknown, label: string): string {

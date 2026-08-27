@@ -7,7 +7,7 @@
  * identity, not merely text (spec §35).
  */
 
-import { prepareCached, requireStore, withBusyRetry, type Store } from "./database";
+import { cachedPrepare, loadStore, withBusyRetry } from "./database";
 import {
   decodeAnchorsBlob,
   decodeFingerprintsBlob,
@@ -41,9 +41,8 @@ export interface UndoRecord {
   afterRetired: Set<string>;
 }
 
-export function getUndoRecord(store: Store, path: string): UndoRecord | undefined {
-  const row = prepareCached(
-    store,
+export function getUndoRecord(path: string): UndoRecord | undefined {
+  const row = cachedPrepare(
     `SELECT path, transaction_id, before_bytes, after_checksum,
          before_anchors, before_fingerprints, before_retired,
          after_anchors, after_fingerprints, after_retired
@@ -66,8 +65,8 @@ export function getUndoRecord(store: Store, path: string): UndoRecord | undefine
   };
 }
 
-export function deleteUndoRecord(store: Store, path: string): void {
-  withBusyRetry(() => prepareCached(store, `DELETE FROM undo WHERE path = ?`).run(path));
+export function deleteUndoRecord(path: string): void {
+  withBusyRetry(() => cachedPrepare(`DELETE FROM undo WHERE path = ?`).run(path));
 }
 
 export function undoPayloadToRecord(payload: UndoPayload): UndoRecord {
@@ -86,17 +85,11 @@ export function undoPayloadToRecord(payload: UndoPayload): UndoRecord {
 }
 
 export async function loadUndoRecord(path: string): Promise<UndoRecord | undefined> {
-  const store = await requireStoreAsync();
-  return getUndoRecord(store, path);
+  await loadStore();
+  return getUndoRecord(path);
 }
 
 export async function clearUndoRecord(path: string): Promise<void> {
-  const store = await requireStoreAsync();
-  deleteUndoRecord(store, path);
-}
-
-async function requireStoreAsync(): Promise<Store> {
-  // The store is opened at session start; requireStore throws a clear
-  // state error if it was never opened.
-  return requireStore();
+  await loadStore();
+  deleteUndoRecord(path);
 }

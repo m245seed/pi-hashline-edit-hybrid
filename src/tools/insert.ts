@@ -9,44 +9,20 @@
 
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { toCwd } from "../paths";
-import { abortIf, debugLog, sha256Hex } from "../utils";
-import { withFileMutationQueue } from "../filesystem/concurrency";
-import { resolveTarget } from "../filesystem/resolve-target";
+import { abortIf } from "../utils";
+import { withFileMutationQueue } from "../filesystem/resolve-target";
+import { resolveMutationTarget, commitAndRenderMutation } from "./shared";
 import { validateInsertRequest } from "../mutation/validate";
-import {
-  buildAnchorIndex,
-  resolveAnchor,
-  staleAnchorMessage,
-} from "../mutation/resolve";
+import { staleAnchorMessage } from "../mutation/resolve";
 import {
   applyTransaction,
   type InsertOp,
 } from "../mutation/apply";
-import {
-  loadAnchoredFile,
-  commitMutation,
-  encodeAfterBytes,
-  anchorSpaceWarning,
-  mixedEndingsWarning,
-  newTransactionIdFor,
-} from "../mutation/transaction";
-import { renderDiff } from "../render/diff";
-import { serveLines, servedWindowNotice } from "../served/ledger";
+import { loadAnchoredFile } from "../mutation/transaction";
 import { hashlineDetails } from "../render/result-details";
-import { isFrozen, frozenRejection } from "../integration/freeze";
-import {
-  emitMutationBefore,
-  emitMutationAfter,
-  emitMutationRejected,
-  mutationEventBase,
-} from "../integration/ipc";
-import { HASHLINE_PROTOCOL_ID } from "../integration/protocol";
-import { fingerprintHexes } from "../anchors/fingerprints";
-import { MAX_FEEDBACK_LINES, MAX_DISPLAY_LINE_BYTES } from "../constants";
-import { formatSize } from "../utils";
+import { HASHLINE_PROTOCOL_ID } from "../constants";
 import { checkRangeServed, formatRangeFailure } from "../served/authorize";
-import type { MutationMetrics } from "./mutation-types";
+import type { MutationMetrics } from "./shared";
 export interface InsertToolDetails {
   /** Rendered anchored diff text (same content as the text response);
    * omitted for no-op transactions, which produce no diff. */
@@ -117,39 +93,13 @@ export function buildInsertToolDef(): ToolDefinition<any, InsertToolDetails> {
 
     async execute(toolCallId, params, signal, _onUpdate, ctx) {
       const request = validateInsertRequest(params);
-      const absolutePath = toCwd(request.path, ctx.cwd);
-      const mutationTargetPath = await resolveTarget(absolutePath);
-      const rejectionTxId = newTransactionIdFor();
-      let beforeSha = "";
-      try {
-        return await runInsert({
-          toolCallId,
-          request,
-          mutationTargetPath,
-          signal,
-          trackBeforeSha: (sha) => {
-            beforeSha = sha;
-          },
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const code = /\[(E_[A-Z0-9_]+)\]/.exec(message)?.[1] ?? "E_UNKNOWN";
-        emitMutationRejected(
-          mutationEventBase({
-            transactionId: rejectionTxId,
-            toolCallId,
-            path: mutationTargetPath,
-            operation: "insert",
-            editCount: request.inserts.length,
-            removedLines: 0,
-            addedLines: 0,
-            beforeSha256: beforeSha,
-            outcome: code === "E_ABORTED" ? "cancelled" : "rejected",
-            warningCodes: [code],
-          }),
-        );
-        throw error;
-      }
+      const mutationTargetPath = await resolveMutationTarget(request.path, ctx.cwd);
+      return runInsert({
+        toolCallId,
+        request,
+        mutationTargetPath,
+        signal,
+      });
     },
   };
 }
@@ -159,25 +109,19 @@ interface RunInsertInput {
   request: ReturnType<typeof validateInsertRequest>;
   mutationTargetPath: string;
   signal?: AbortSignal;
-  trackBeforeSha: (sha: string) => void;
 }
 
 async function runInsert(input: RunInsertInput): Promise<ReturnType<ToolDefinition<any, InsertToolDetails>["execute"]>> {
-  const { toolCallId, request, mutationTargetPath, signal, trackBeforeSha } = input;
+  const { request, mutationTargetPath, signal } = input;
   return withFileMutationQueue(mutationTargetPath, async () => {
-    // PH §12.5: destructive tools reject while a Sentinel freeze is active.
-    if (isFrozen()) {
-      throw new Error(frozenRejection("insert"));
-    }
     abortIf(signal);
     const file = await loadAnchoredFile(mutationTargetPath, request.path);
-    trackBeforeSha(file.checksum);
-    const anchorIndex = buildAnchorIndex(file.anchors);
+    const anchorIndex = new Map<string, number>(file.anchors.map((a, i) => [a, i]));
 
     const ops: InsertOp[] = [];
     for (let i = 0; i < request.inserts.length; i++) {
       const item = request.inserts[i]!;
-      const idx = resolveAnchor(anchorIndex, item.anchor);
+      const idx = anchorIndex.get(item.anchor);
       if (idx === undefined) {
         throw new Error(
           staleAnchorMessage(
@@ -211,141 +155,14 @@ async function runInsert(input: RunInsertInput): Promise<ReturnType<ToolDefiniti
       { finalNewline: request.final_newline },
     );
 
-    const warnings: string[] = [];
-    if (result.unusedFinalNewline) {
-      warnings.push(
-        `[W_UNUSED_OPTION] "final_newline" was specified but no insert reaches the end of the file; it was not applied.`,
-      );
-    }
-    const retiredAfter = new Set([...file.retired, ...result.retiredAdded]);
-    const pressure = anchorSpaceWarning(new Set(result.anchors).size, retiredAfter.size);
-    if (pressure) warnings.push(pressure);
-    const mixed = mixedEndingsWarning(file.doc, result.metrics.linesAdded);
-    if (mixed) warnings.push(mixed);
-
-    const afterRaw = encodeAfterBytes(result.document);
-    const afterChecksum = sha256Hex(afterRaw);
-    const beforeRevision = file.checksum;
-    const transactionId = newTransactionIdFor();
-
-    if (result.noop) {
-      const metrics: MutationMetrics = {
-        classification: "noop",
-        edits_attempted: result.metrics.editsAttempted,
-        edits_applied: 0,
-        edits_noop: result.metrics.editsNoop,
-        lines_added: 0,
-        lines_removed: 0,
-        warnings: warnings.length,
-        before_revision: beforeRevision,
-        after_revision: beforeRevision,
-        transaction_id: null,
-      };
-      return {
-        content: [{ type: "text", text: "No changes made." }],
-        details: {
-          metrics,
-          hashline: hashlineDetails({
-            outcome: "no_change",
-            code: "NO_CHANGE",
-            fileSha256: beforeRevision,
-            servedRows: 0,
-          }),
-        },
-      };
-    }
-
-    emitMutationBefore(
-      mutationEventBase({
-        transactionId,
-        toolCallId,
-        path: mutationTargetPath,
-        operation: "insert",
-        editCount: ops.length,
-        removedLines: result.metrics.linesRemoved,
-        addedLines: result.metrics.linesAdded,
-        beforeSha256: beforeRevision,
-        afterSha256: afterChecksum,
-        outcome: "success",
-        warningCodes: [],
-      }),
-    );
-
-    abortIf(signal);
-    await commitMutation({
+    return commitAndRenderMutation({
+      tool: "insert",
+      displayPath: request.path,
       realPath: mutationTargetPath,
-      label: request.path,
-      rawBefore: file.raw,
-      checksumBefore: beforeRevision,
-      docBefore: file.doc,
-      anchorsBefore: file.anchors,
-      fingerprintsBefore: file.fingerprints,
-      retiredBefore: file.retired,
-      rawAfter: afterRaw,
-      checksumAfter: afterChecksum,
-      docAfter: result.document,
-      anchorsAfter: result.anchors,
-      fingerprintsAfter: fingerprintHexes(
-        result.document.lines.map((line) => line.text),
-      ),
-      retiredAfter,
-      transactionId,
-      signal,
+      file,
+      result,
       expectedRevision: request.expected_revision,
-      keepUndo: true,
-      warnings,
+      signal,
     });
-
-    const diff = renderDiff(result.diffRows);
-    const evictedRows = serveLines(mutationTargetPath, diff.served);
-    let diffText = diff.text;
-    if (evictedRows > 0) diffText += servedWindowNotice(evictedRows);
-    const metrics: MutationMetrics = {
-      classification: result.metrics.classification,
-      edits_attempted: result.metrics.editsAttempted,
-      edits_applied: result.metrics.editsApplied,
-      edits_noop: result.metrics.editsNoop,
-      lines_added: result.metrics.linesAdded,
-      lines_removed: result.metrics.linesRemoved,
-      warnings: warnings.length,
-      before_revision: beforeRevision,
-      after_revision: afterChecksum,
-      transaction_id: transactionId,
-    };
-    const text = warnings.length > 0 ? `${diffText}\n\n${warnings.join("\n")}` : diffText;
-    emitMutationAfter(
-      mutationEventBase({
-        transactionId,
-        toolCallId,
-        path: mutationTargetPath,
-        operation: "insert",
-        editCount: ops.length,
-        removedLines: result.metrics.linesRemoved,
-        addedLines: result.metrics.linesAdded,
-        beforeSha256: beforeRevision,
-        afterSha256: afterChecksum,
-        outcome: "success",
-        warningCodes: warnings
-          .map((w) => /^\[(W_[A-Z0-9_]+)\]/.exec(w)?.[1])
-          .filter((c): c is string => Boolean(c)),
-      }),
-    );
-    debugLog("insert committed", { path: mutationTargetPath, metrics, warnings });
-
-    return {
-      content: [{ type: "text", text }],
-      details: {
-        diff: diffText,
-        metrics,
-        hashline: hashlineDetails({
-          outcome: "success",
-          code: "OK",
-          transactionId,
-          fileSha256: afterChecksum,
-          servedRows: diff.servedRows,
-          warnings,
-        }),
-      },
-    };
   });
 }

@@ -15,11 +15,10 @@ import { ANCHOR_SPACE } from "../anchors/alphabet";
 import { ANCHOR_SPACE_PRESSURE_RATIO } from "../constants";
 import { fingerprintHexes } from "../anchors/fingerprints";
 import { reconcileState } from "../anchors/reconcile";
-import { decodeDocument, encodeDocument } from "../document/decode";
-import { assertFileKind, assertLineCount, checkFileKind } from "../document/file-kind";
-import { hasMixedLineEndings, type Document, type TextLine } from "../document/lines";
+import { decodeDocument, encodeDocument, assertFileKind, assertLineCount, checkFileKind } from "../document/encoding";
+import { hasMixedLineEndings, type Document } from "../document/lines";
 import { reconcileServed } from "../served/ledger";
-import { cachedPrepare, loadStore, requireStore, withBusyRetry } from "../state/database";
+import { cachedPrepare, loadStore, withBusyRetry } from "../state/database";
 import {
   getSnapshot,
   putSnapshot,
@@ -27,11 +26,7 @@ import {
   type FileSnapshot,
   type UndoPayload,
 } from "../state/snapshots";
-import {
-  insertPendingTransaction,
-  newTransactionId,
-  type PendingState,
-} from "../state/transaction-journal";
+import { insertPendingTransaction, type PendingState } from "../state/transaction-journal";
 import {
   inspectTarget,
   prepareTempWrite,
@@ -41,7 +36,6 @@ import {
   writeInPlace,
 } from "../filesystem/atomic-write";
 import { errCode, sha256Hex } from "../utils";
-import type { EditMetrics } from "./apply";
 import type { FinalNewline } from "./validate";
 
 export interface AnchoredFile {
@@ -93,8 +87,8 @@ export async function loadAnchoredFile(
   assertLineCount(doc.lines.length, label);
   const checksum = sha256Hex(raw);
   const texts = doc.lines.map((line) => line.text);
-  const store = await loadStore();
-  const snapshot = getSnapshot(store, realPath);
+  await loadStore();
+  const snapshot = getSnapshot(realPath);
   if (snapshot && snapshot.rawChecksum === checksum) {
     return {
       realPath,
@@ -135,7 +129,7 @@ export async function loadAnchoredFile(
     retired,
     updatedAt: Date.now(),
   };
-  putSnapshot(store, realPath, newSnapshot);
+  putSnapshot(realPath, newSnapshot);
   return {
     realPath,
     raw,
@@ -210,7 +204,7 @@ export async function commitMutation(input: CommitInput): Promise<void> {
     );
   }
   abortCheck(signal);
-  const store = await loadStore();
+  await loadStore();
 
   const beforeState: PendingState = {
     anchors: anchorsBefore,
@@ -363,14 +357,6 @@ export function mixedEndingsWarning(
 
 export function encodeAfterBytes(doc: Document): Buffer {
   return Buffer.from(encodeDocument(doc), "utf-8");
-}
-
-export function textsOf(lines: TextLine[]): string[] {
-  return lines.map((line) => line.text);
-}
-
-export function newTransactionIdFor(): string {
-  return newTransactionId();
 }
 
 export type { FinalNewline };

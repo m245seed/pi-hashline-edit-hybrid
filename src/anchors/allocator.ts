@@ -10,7 +10,7 @@
  */
 
 import { ANCHOR_SPACE, ANCHOR_PROBE_STRIDE, anchorToIdx, idxToAnchor } from "./alphabet";
-import { getH } from "./hasher";
+import { hashLine32 } from "./hasher";
 
 export class AnchorAllocator {
   private readonly active: Set<number>;
@@ -31,7 +31,7 @@ export class AnchorAllocator {
 
   /** Deterministic allocation for a line's exact text. */
   allocate(text: string): string {
-    const base = getH().h32(text) % ANCHOR_SPACE;
+    const base = hashLine32(text) % ANCHOR_SPACE;
     let idx = base;
     for (let probes = 0; probes < ANCHOR_SPACE; probes++) {
       if (!this.active.has(idx) && !this.retired.has(idx)) {

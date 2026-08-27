@@ -1,13 +1,11 @@
-import { beforeAll, describe, expect, it } from "vitest";
-import { initHasher } from "../../src/anchors/hasher";
+import { describe, expect, it } from "vitest"
+
 import { ANCHOR_RE } from "../../src/anchors/alphabet";
-import { decodeDocument, encodeDocument } from "../../src/document/decode";
+import { decodeDocument, encodeDocument } from "../../src/document/encoding";
 import { applyTransaction, type EditOp, type InsertOp, wouldEmptyMessage } from "../../src/mutation/apply";
 import { hasMixedLineEndings } from "../../src/document/lines";
 
-beforeAll(async () => {
-  await initHasher();
-});
+;
 
 function docOf(content: string) {
   return decodeDocument(Buffer.from(content, "utf-8"), "test");

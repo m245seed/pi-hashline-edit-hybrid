@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { splitTextLines, joinTextLines, preferredEol, hasMixedLineEndings } from "../../src/document/lines";
-import { decodeDocument, encodeDocument } from "../../src/document/decode";
+import { decodeDocument, encodeDocument } from "../../src/document/encoding";
 
 describe("line model (spec §40)", () => {
   it("splits and joins LF content", () => {

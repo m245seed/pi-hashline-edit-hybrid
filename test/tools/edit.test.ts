@@ -1,7 +1,7 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { withStateDir } from "../support/env";
-import { makeProject, runTool, textOf, writeFileAt, readFileAt } from "../support/tools";
-import { initHasher } from "../../src/anchors/hasher";
+import { makeProject, runTool, textOf, writeFileAt, readFileAt, anchorsFromRead } from "../support/tools";
+
 import { resetStoreForTests } from "../../src/state/database";
 import { resetServed } from "../../src/served/ledger";
 import { buildEditToolDef } from "../../src/tools/edit";
@@ -12,19 +12,7 @@ import { getLargeEditGuard, setLargeEditGuard } from "../../src/constants";
 const editTool = buildEditToolDef();
 const readTool = buildReadToolDef();
 
-function anchorsFromRead(text: string): Map<string, string> {
-  // content -> anchor
-  const map = new Map<string, string>();
-  for (const line of text.split("\n")) {
-    const match = line.match(/^([A-Za-z0-9]{4})│(.*)$/);
-    if (match) map.set(match[2]!, match[1]!);
-  }
-  return map;
-}
-
-beforeAll(async () => {
-  await initHasher();
-});
+;
 
 beforeEach(() => {
   withStateDir();

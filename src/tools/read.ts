@@ -11,13 +11,11 @@
 
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { toCwd } from "../paths";
 import { abortIf, isRec, normPosInt, rejectUnknownFields } from "../utils";
-import { DEFAULT_READ_LIMIT, READ_MAX_OUTPUT_BYTES } from "../constants";
-import { HASHLINE_PROTOCOL_ID } from "../integration/protocol";
-import { resolveTarget } from "../filesystem/resolve-target";
+import { DEFAULT_READ_LIMIT, READ_MAX_OUTPUT_BYTES, HASHLINE_PROTOCOL_ID } from "../constants";
+import { resolveMutationTarget } from "./shared";
 import { loadAnchoredFile } from "../mutation/transaction";
-import { renderLinesBounded } from "../render/hashline";
+import { renderLinesBounded } from "../render/engine";
 import { serveLines, servedWindowNotice } from "../served/ledger";
 import { hashlineDetails } from "../render/result-details";
 
@@ -76,8 +74,7 @@ export function buildReadToolDef(): ToolDefinition<any, ReadToolDetails> {
       const offset = normPosInt(params.offset, "offset");
       const limit = normPosInt(params.limit, "limit");
       const requestPath = params.path;
-      const absolutePath = toCwd(requestPath, ctx.cwd);
-      const realPath = await resolveTarget(absolutePath);
+      const realPath = await resolveMutationTarget(requestPath, ctx.cwd);
       abortIf(signal);
 
       const file = await loadAnchoredFile(realPath, requestPath);

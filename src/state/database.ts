@@ -61,11 +61,12 @@ const MAX_CACHED_PREPARED = 32;
 type PreparedStatement = any;
 const statementCache = new WeakMap<DatabaseSync, Map<string, PreparedStatement>>();
 
-export function prepareCached(store: Store, sql: string): PreparedStatement {
-  let cache = statementCache.get(store.db);
+export function cachedPrepare(sql: string): PreparedStatement {
+  const db = requireStore().db;
+  let cache = statementCache.get(db);
   if (!cache) {
     cache = new Map<string, PreparedStatement>();
-    statementCache.set(store.db, cache);
+    statementCache.set(db, cache);
   }
   let stmt = cache.get(sql);
   if (stmt) {
@@ -74,7 +75,7 @@ export function prepareCached(store: Store, sql: string): PreparedStatement {
     cache.set(sql, stmt);
     return stmt;
   }
-  stmt = store.db.prepare(sql);
+  stmt = db.prepare(sql);
   cache.set(sql, stmt);
   if (cache.size > MAX_CACHED_PREPARED) {
     const oldestKey = cache.keys().next().value as string;
@@ -85,10 +86,6 @@ export function prepareCached(store: Store, sql: string): PreparedStatement {
     } catch {}
   }
   return stmt;
-}
-
-export function cachedPrepare(sql: string): PreparedStatement {
-  return prepareCached(requireStore(), sql);
 }
 
 function clearStatementCache(db: DatabaseSync): void {

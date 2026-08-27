@@ -7,11 +7,6 @@
  * built-ins by name); the hashline `write` override is the sole safe_write
  * owner (PH-WRITE-003). A successful external `write` triggers anchor
  * reconciliation and an optional auto-read preview.
- *
- * When Pi exposes a shared event bus, hashline registers the Sentinel IPC
- * protocol (spec §12, §31.11): capability announcement, mutation events,
- * freeze handling, and context-epoch synchronization. Hashline remains fully
- * functional and strictly safe when Sentinel is absent.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -23,8 +18,6 @@ import { buildWriteToolDef } from "./src/tools/write";
 import { buildUndoToolDef } from "./src/tools/undo";
 import { registerWriteHook } from "./src/integration/write-hook";
 import { registerSession } from "./src/integration/session";
-import { registerIpc } from "./src/integration/ipc";
-
 export default function (pi: ExtensionAPI): void {
   const autoReadState = { value: true };
   const readTool = buildReadToolDef();
@@ -41,5 +34,4 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool(undoTool);
   registerWriteHook(pi, () => autoReadState.value);
   registerSession(pi, autoReadState);
-  registerIpc(pi, [readTool, grepTool, editTool, insertTool, writeTool, undoTool]);
 }

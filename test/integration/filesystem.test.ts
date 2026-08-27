@@ -1,13 +1,14 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { withStateDir } from "../support/env";
-import { makeProject, runTool, textOf, writeFileAt, readFileAt } from "../support/tools";
-import { initHasher } from "../../src/anchors/hasher";
+import { makeProject, runTool, textOf, writeFileAt, readFileAt, anchorsFromRead } from "../support/tools";
+
 import { resetStoreForTests, loadStore } from "../../src/state/database";
 import { resetServed } from "../../src/served/ledger";
 import { buildReadToolDef } from "../../src/tools/read";
 import { buildEditToolDef } from "../../src/tools/edit";
-import { loadAnchoredFile, commitMutation, newTransactionIdFor } from "../../src/mutation/transaction";
-import { decodeDocument, encodeDocument } from "../../src/document/decode";
+import { loadAnchoredFile, commitMutation } from "../../src/mutation/transaction";
+import { newTransactionId } from "../../src/state/transaction-journal";
+import { encodeDocument } from "../../src/document/encoding";
 import { fingerprintHexes } from "../../src/anchors/fingerprints";
 import { applyTransaction } from "../../src/mutation/apply";
 import { sha256Hex } from "../../src/utils";
@@ -18,18 +19,7 @@ import { linkSync, symlinkSync, statSync, readlinkSync, unlinkSync, writeFileSyn
 const readTool = buildReadToolDef();
 const editTool = buildEditToolDef();
 
-function anchorsFromRead(text: string): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const line of text.split("\n")) {
-    const match = line.match(/^([A-Za-z0-9]{4})│(.*)$/);
-    if (match) map.set(match[2]!, match[1]!);
-  }
-  return map;
-}
-
-beforeAll(async () => {
-  await initHasher();
-});
+;
 
 beforeEach(() => {
   withStateDir();
@@ -149,7 +139,7 @@ describe("filesystem behaviors (spec §43–§46)", () => {
         anchorsAfter: result.anchors,
         fingerprintsAfter: fingerprintHexes(result.document.lines.map((l) => l.text)),
         retiredAfter: new Set([...file.retired, ...result.retiredAdded]),
-        transactionId: newTransactionIdFor(),
+        transactionId: newTransactionId(),
         keepUndo: true,
         warnings: [],
       }),
@@ -206,7 +196,7 @@ describe("filesystem behaviors (spec §43–§46)", () => {
         anchorsAfter: result.anchors,
         fingerprintsAfter: fingerprintHexes(result.document.lines.map((l) => l.text)),
         retiredAfter: new Set([...file.retired, ...result.retiredAdded]),
-        transactionId: newTransactionIdFor(),
+        transactionId: newTransactionId(),
         keepUndo: true,
         warnings: [],
       }),

@@ -20,7 +20,7 @@
 
 import * as Diff from "diff";
 import { AnchorAllocator } from "../anchors/allocator";
-import { alignSequences } from "../anchors/sequence-map";
+import { alignSequences, internIds } from "../anchors/sequence-map";
 import {
   preferredEol,
   splitTextLines,
@@ -29,8 +29,31 @@ import {
   type LineEol,
   type TextLine,
 } from "../document/lines";
-import { findOverlap, type Span } from "./overlap";
 import type { FinalNewline } from "./validate";
+
+// ─── Overlap rules (spec §20) ──────────────────────────────────────────
+// Destructive ranges that share any line are invalid — including ranges
+// that merely share an endpoint line. Adjacent ranges are valid.
+// Zero-width insertions at the same position are not overlaps; request
+// order defines output order there (spec §23).
+
+interface Span {
+  requestIndex: number;
+  byteStart: number;
+  byteEnd: number; // exclusive
+}
+
+/** Returns the indexes of the first overlapping pair, if any. */
+function findOverlap(sorted: Span[]): [number, number] | undefined {
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1]!;
+    const cur = sorted[i]!;
+    if (cur.byteStart < prev.byteEnd) {
+      return [prev.requestIndex, cur.requestIndex];
+    }
+  }
+  return undefined;
+}
 
 export interface EditOp {
   kind: "edit";
@@ -441,24 +464,10 @@ export function buildDiffRows(
   if (oldMid.length === 0 && newMid.length === 0) return [];
 
   // Use dense integer IDs for large mids to avoid O(64) string comparisons.
-  let parts: ReturnType<typeof Diff.diffArrays>;
-  if (oldMid.length > 3000 && newMid.length > 3000) {
-    const idByStr = new Map<string, number>();
-    let nextId = 1;
-    const toId = (s: string): number => {
-      let id = idByStr.get(s);
-      if (id === undefined) {
-        id = nextId++;
-        idByStr.set(s, id);
-      }
-      return id;
-    };
-    const oldIds = oldMid.map(toId);
-    const newIds = newMid.map(toId);
-    parts = Diff.diffArrays(oldIds as unknown as string[], newIds as unknown as string[]);
-  } else {
-    parts = Diff.diffArrays(oldMid as string[], newMid as string[]);
-  }
+  const parts =
+    oldMid.length > 3000 && newMid.length > 3000
+      ? Diff.diffArrays(...internIds(oldMid, newMid))
+      : Diff.diffArrays(oldMid as string[], newMid as string[]);
 
   const rows: DiffRow[] = [];
   let oldPos = 0;

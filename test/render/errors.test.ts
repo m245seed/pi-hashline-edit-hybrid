@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "fs";
-import { join, dirname, relative } from "path";
+import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { ERROR_CODES, WARNING_CODES, E_SUSPICIOUS_PATCH } from "../../src/render/errors";
 

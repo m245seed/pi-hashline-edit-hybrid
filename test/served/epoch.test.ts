@@ -1,20 +1,13 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { join } from "path";
 import { withStateDir } from "../support/env";
-import {
-  makeProject,
-  readFileAt,
-  runTool,
-  textOf,
-  writeFileAt,
-} from "../support/tools";
-import { initHasher } from "../../src/anchors/hasher";
+import { makeProject, readFileAt, runTool, textOf, writeFileAt, anchorsFromRead } from "../support/tools";
+
 import { resetStoreForTests } from "../../src/state/database";
-import { resetServed, servedText } from "../../src/served/ledger";
+import { resetServed } from "../../src/served/ledger";
 import {
   getContextEpoch,
   advanceContextEpoch,
-  setContextEpoch,
   resetContextEpoch,
 } from "../../src/served/epoch";
 import { buildReadToolDef } from "../../src/tools/read";
@@ -25,18 +18,7 @@ const readTool = buildReadToolDef();
 const editTool = buildEditToolDef();
 const undoTool = buildUndoToolDef();
 
-function anchorsFromRead(text: string): Map<string, string> {
-  const anchors = new Map<string, string>();
-  for (const line of text.split("\n")) {
-    const match = line.match(/^([A-Za-z0-9]{4})│(.*)$/);
-    if (match) anchors.set(match[2]!, match[1]!);
-  }
-  return anchors;
-}
-
-beforeAll(async () => {
-  await initHasher();
-});
+;
 
 beforeEach(() => {
   withStateDir();
@@ -52,19 +34,11 @@ afterEach(async () => {
 describe("context epochs (PH-CONTEXT-001..005)", () => {
   it("starts at epoch 1 and advances monotonically", () => {
     expect(getContextEpoch()).toBe(1);
-    const next = advanceContextEpoch("test");
+    const next = advanceContextEpoch();
     expect(next).toBe(2);
     expect(getContextEpoch()).toBe(2);
   });
 
-  it("setContextEpoch only moves forward", () => {
-    setContextEpoch(5);
-    expect(getContextEpoch()).toBe(5);
-    setContextEpoch(3);
-    expect(getContextEpoch()).toBe(5);
-    setContextEpoch(7);
-    expect(getContextEpoch()).toBe(7);
-  });
 
   it("anchors from an older epoch no longer authorize destructive edits", async () => {
     const dir = makeProject();
@@ -74,7 +48,7 @@ describe("context epochs (PH-CONTEXT-001..005)", () => {
     const two = anchors.get("two")!;
 
     // Context rebuilt (compaction / tree navigation).
-    advanceContextEpoch("session_compact");
+    advanceContextEpoch();
 
     await expect(
       runTool(
@@ -93,7 +67,7 @@ describe("context epochs (PH-CONTEXT-001..005)", () => {
     const anchors = anchorsFromRead(textOf(read));
     const two = anchors.get("two")!;
 
-    advanceContextEpoch("session_compact");
+    advanceContextEpoch();
     // External edit elsewhere in the file: identical lines keep their
     // anchors, but the reconciliation transfer must keep their original
     // epoch instead of re-stamping them into the current one.
@@ -114,7 +88,7 @@ describe("context epochs (PH-CONTEXT-001..005)", () => {
     writeFileAt(dir, "a.ts", "one\ntwo\nthree\n");
     const read = await runTool(readTool, { path: "a.ts" }, dir);
     const anchors = anchorsFromRead(textOf(read));
-    advanceContextEpoch("session_compact");
+    advanceContextEpoch();
 
     const reread = await runTool(readTool, { path: "a.ts" }, dir);
     const fresh = anchorsFromRead(textOf(reread));
@@ -140,7 +114,7 @@ describe("context epochs (PH-CONTEXT-001..005)", () => {
       { path: "a.ts", edits: [{ range: [one, one], lines: ["ONE"] }] },
       dir,
     );
-    advanceContextEpoch("session_compact");
+    advanceContextEpoch();
     // Undo still works across an epoch advance.
     const undo = await runTool(undoTool, { path: "a.ts" }, dir);
     expect(undo.isError).toBeFalsy();

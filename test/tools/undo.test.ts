@@ -1,7 +1,7 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { withStateDir } from "../support/env";
-import { makeProject, runTool, textOf, writeFileAt, readFileAt } from "../support/tools";
-import { initHasher } from "../../src/anchors/hasher";
+import { makeProject, runTool, textOf, writeFileAt, readFileAt, anchorsFromRead } from "../support/tools";
+
 import { resetStoreForTests, shutdownStore } from "../../src/state/database";
 import { resetServed } from "../../src/served/ledger";
 import { buildEditToolDef } from "../../src/tools/edit";
@@ -13,23 +13,12 @@ const editTool = buildEditToolDef();
 const readTool = buildReadToolDef();
 const undoTool = buildUndoToolDef();
 
-function anchorsFromRead(text: string): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const line of text.split("\n")) {
-    const match = line.match(/^([A-Za-z0-9]{4})│(.*)$/);
-    if (match) map.set(match[2]!, match[1]!);
-  }
-  return map;
-}
-
 async function readAnchors(dir: string, name: string): Promise<Map<string, string>> {
   const result = await runTool(readTool, { path: name }, dir);
   return anchorsFromRead(textOf(result));
 }
 
-beforeAll(async () => {
-  await initHasher();
-});
+;
 
 beforeEach(() => {
   withStateDir();
@@ -91,19 +80,14 @@ describe("undo tool (spec §32–§36)", () => {
     await runTool(editTool, { path: "a.ts", edits: [{ range: [one, one], lines: ["ONE"] }] }, dir);
     // External modification after the transaction.
     writeFileAt(dir, "a.ts", "ONE\ntwo\nthree\n");
-    const undo = await runTool(undoTool, { path: "a.ts" }, dir);
-    expect(undo.isError).toBe(true);
-    expect(textOf(undo)).toContain("[E_UNDO_STALE]");
-    expect(textOf(undo)).toContain("Nothing was modified.");
+    await expect(runTool(undoTool, { path: "a.ts" }, dir)).rejects.toThrow(/E_UNDO_STALE/);
     expect(readFileAt(join(dir, "a.ts"))).toBe("ONE\ntwo\nthree\n");
   });
 
   it("reports E_NO_UNDO when there is no history", async () => {
     const dir = makeProject();
     writeFileAt(dir, "a.ts", "one\n");
-    const undo = await runTool(undoTool, { path: "a.ts" }, dir);
-    expect(undo.isError).toBe(true);
-    expect(textOf(undo)).toContain("[E_NO_UNDO]");
+    await expect(runTool(undoTool, { path: "a.ts" }, dir)).rejects.toThrow(/E_NO_UNDO/);
   });
 
   it("survives a store restart (spec §36)", async () => {
@@ -187,9 +171,7 @@ describe("undo tool (spec §32–§36)", () => {
     expect(undo.isError).toBeFalsy();
     expect(readFileAt(join(dir, "a.ts"))).toBe("ONE\ntwo\n");
     // Only one undo level: undoing again reports E_NO_UNDO.
-    const undo2 = await runTool(undoTool, { path: "a.ts" }, dir);
-    expect(undo2.isError).toBe(true);
-    expect(textOf(undo2)).toContain("[E_NO_UNDO]");
+    await expect(runTool(undoTool, { path: "a.ts" }, dir)).rejects.toThrow(/E_NO_UNDO/);
   });
 
   it("undo itself is crash-safe and records no new undo entry", async () => {
@@ -201,9 +183,7 @@ describe("undo tool (spec §32–§36)", () => {
     const undo = await runTool(undoTool, { path: "a.ts" }, dir);
     expect(undo.isError).toBeFalsy();
     // No new undo record was created by the undo itself.
-    const undo2 = await runTool(undoTool, { path: "a.ts" }, dir);
-    expect(undo2.isError).toBe(true);
-    expect(textOf(undo2)).toContain("[E_NO_UNDO]");
+    await expect(runTool(undoTool, { path: "a.ts" }, dir)).rejects.toThrow(/E_NO_UNDO/);
   });
 });
 
@@ -216,9 +196,7 @@ describe("undo tool edge cases", () => {
     const one = anchors.get("one")!;
     await runTool(editTool, { path: "a.ts", edits: [{ range: [one, one], lines: ["ONE"] }] }, dir);
     require("fs").unlinkSync(file);
-    const undo = await runTool(undoTool, { path: "a.ts" }, dir);
-    expect(undo.isError).toBe(true);
-    expect(textOf(undo)).toContain("[E_UNDO_STALE]");
+    await expect(runTool(undoTool, { path: "a.ts" }, dir)).rejects.toThrow(/E_UNDO_STALE/);
   });
 
   it("validates the path field", async () => {

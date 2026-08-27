@@ -1,7 +1,7 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { withStateDir } from "../support/env";
-import { makeProject, runTool, textOf, writeFileAt, readFileAt } from "../support/tools";
-import { initHasher } from "../../src/anchors/hasher";
+import { makeProject, runTool, textOf, writeFileAt, readFileAt, anchorsFromReadArray } from "../support/tools";
+
 import { resetStoreForTests } from "../../src/state/database";
 import { resetServed } from "../../src/served/ledger";
 import { buildReadToolDef } from "../../src/tools/read";
@@ -9,7 +9,7 @@ import { buildEditToolDef } from "../../src/tools/edit";
 import { buildUndoToolDef } from "../../src/tools/undo";
 import { ANCHOR_RE } from "../../src/anchors/alphabet";
 import { AnchorAllocator } from "../../src/anchors/allocator";
-import { decodeDocument, encodeDocument } from "../../src/document/decode";
+import { decodeDocument, encodeDocument } from "../../src/document/encoding";
 import { applyTransaction, type MutationOp, type EditOp, type InsertOp } from "../../src/mutation/apply";
 import { join } from "path";
 
@@ -95,7 +95,7 @@ function checkPureInvariants(
 
 describe("property: chained random edits preserve all invariants (spec §59, §62)", () => {
   it("runs thousands of chained mutations without an anchor invariant violation", async () => {
-    await initHasher();
+    
     const rand = mulberry32(0x5eed);
     let texts = randomLines(rand, 20);
     let doc = decodeDocument(Buffer.from(encodeDocument({ bom: "", lines: texts.map((t) => ({ text: t, eol: "\n" })) }), "utf-8"), "fuzz");
@@ -200,7 +200,7 @@ describe("property: chained random edits preserve all invariants (spec §59, §6
   });
 
   it("external-change fuzz: outcome is always a safe edit or a clean rejection", async () => {
-    await initHasher();
+    
     const rand = mulberry32(0xc0ffee);
     for (let iter = 0; iter < 300; iter++) {
       const n = 5 + Math.floor(rand() * 10);
@@ -258,19 +258,8 @@ describe("property: chained random edits preserve all invariants (spec §59, §6
 
 // ─── End-to-end fuzz through the tools (spec §62, §70) ─────────────────
 
-function anchorsFromRead(text: string): string[] {
-  // Row-ordered anchors; duplicate contents are fine.
-  const out: string[] = [];
-  for (const line of text.split("\n")) {
-    const match = line.match(/^([A-Za-z0-9]{4})│/);
-    if (match) out.push(match[1]!);
-  }
-  return out;
-}
 
-beforeAll(async () => {
-  await initHasher();
-});
+;
 
 beforeEach(() => {
   withStateDir();
@@ -292,7 +281,7 @@ describe("property: chained tool-level edits (spec §62)", () => {
     for (let iter = 0; iter < 200; iter++) {
       const read = await runTool(readTool, { path: "fuzz.ts" }, dir);
       expect(read.isError).toBeFalsy();
-      const keys = anchorsFromRead(textOf(read));
+      const keys = anchorsFromReadArray(textOf(read));
       if (keys.length === 0) continue;
 
       const useEdit = rand() < 0.8;
@@ -351,7 +340,7 @@ describe("property: chained tool-level edits (spec §62)", () => {
       const original = randomLines(rand, 8).join("\n") + "\n";
       writeFileAt(dir, "x.ts", original);
       const read = await runTool(readTool, { path: "x.ts" }, dir);
-      const keys = anchorsFromRead(textOf(read));
+      const keys = anchorsFromReadArray(textOf(read));
       if (keys.length < 2) continue;
 
       // Random external change.

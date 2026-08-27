@@ -14,7 +14,7 @@
 
 import { readFile, stat } from "fs/promises";
 import { sha256Hex } from "../utils";
-import { requireStore, withTransaction } from "./database";
+import { withTransaction } from "./database";
 import {
   putSnapshot,
   upsertUndoRow,
@@ -37,8 +37,7 @@ export interface RecoverySummary {
 
 export async function runRecovery(): Promise<RecoverySummary> {
   const summary: RecoverySummary = { discarded: 0, promoted: 0, diverged: 0, warnings: [] };
-  const store = requireStore();
-  const pending = listPendingTransactions(store);
+  const pending = listPendingTransactions();
   if (pending.length === 0) return summary;
 
   for (const entry of pending) {
@@ -52,9 +51,9 @@ export async function runRecovery(): Promise<RecoverySummary> {
       if (code === "ENOENT") {
         // File deleted mid-transaction: external action. Do not guess.
         withTransaction(() => {
-          deletePendingTransaction(store, entry.transactionId);
-          deleteUndoRecord(store, entry.path);
-          deleteSnapshot(store, entry.path);
+          deletePendingTransaction(entry.transactionId);
+          deleteUndoRecord(entry.path);
+          deleteSnapshot(entry.path);
         });
         summary.diverged++;
         summary.warnings.push(
@@ -75,7 +74,7 @@ export async function runRecovery(): Promise<RecoverySummary> {
       // Commit never happened. The stored before-state is already the
       // authoritative snapshot; drop the pending post-state.
       withTransaction(() => {
-        deletePendingTransaction(store, entry.transactionId);
+        deletePendingTransaction(entry.transactionId);
       });
       summary.discarded++;
       continue;
@@ -93,7 +92,7 @@ export async function runRecovery(): Promise<RecoverySummary> {
           retired: entry.after.retired,
           updatedAt: Date.now(),
         };
-        putSnapshot(store, entry.path, snapshot);
+        putSnapshot(entry.path, snapshot);
         if (entry.undo) {
           const payload: UndoPayload = {
             path: entry.path,
@@ -107,11 +106,11 @@ export async function runRecovery(): Promise<RecoverySummary> {
             afterFingerprints: entry.after.fingerprints,
             afterRetired: entry.after.retired,
           };
-          upsertUndoRow(store, payload);
+          upsertUndoRow(payload);
         } else {
-          deleteUndoRecord(store, entry.path);
+          deleteUndoRecord(entry.path);
         }
-        deletePendingTransaction(store, entry.transactionId);
+        deletePendingTransaction(entry.transactionId);
       });
       summary.promoted++;
       summary.warnings.push(
@@ -123,9 +122,9 @@ export async function runRecovery(): Promise<RecoverySummary> {
     // External modification: do not guess. Discard transaction state;
     // anchors will be reconciled from the actual file on the next read.
     withTransaction(() => {
-      deletePendingTransaction(store, entry.transactionId);
-      deleteUndoRecord(store, entry.path);
-      deleteSnapshot(store, entry.path);
+      deletePendingTransaction(entry.transactionId);
+      deleteUndoRecord(entry.path);
+      deleteSnapshot(entry.path);
     });
     summary.diverged++;
     summary.warnings.push(

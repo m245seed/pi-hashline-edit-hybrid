@@ -1,12 +1,10 @@
-import { beforeAll, describe, expect, it } from "vitest";
-import { initHasher } from "../../src/anchors/hasher";
+import { describe, expect, it } from "vitest"
+
 import { fingerprintHexes } from "../../src/anchors/fingerprints";
 import { reconcileState } from "../../src/anchors/reconcile";
 import { ANCHOR_RE } from "../../src/anchors/alphabet";
 
-beforeAll(async () => {
-  await initHasher();
-});
+;
 
 function state(texts: string[]): { anchors: string[]; fingerprints: string[] } {
   return { anchors: texts.map((_, i) => `A${String(i).padStart(3, "0")}`), fingerprints: fingerprintHexes(texts) };

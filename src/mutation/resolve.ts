@@ -8,27 +8,8 @@
  */
 
 import { MAX_FEEDBACK_LINES } from "../constants";
-import { renderLines } from "../render/hashline";
+import { renderLines } from "../render/engine";
 
-export interface AnchorIndex {
-  /** anchor -> 0-based line index. */
-  index: Map<string, number>;
-}
-
-export function buildAnchorIndex(anchors: readonly string[]): AnchorIndex {
-  const index = new Map<string, number>();
-  for (let i = 0; i < anchors.length; i++) {
-    index.set(anchors[i]!, i);
-  }
-  return { index };
-}
-
-export function resolveAnchor(
-  anchorIndex: AnchorIndex,
-  anchor: string,
-): number | undefined {
-  return anchorIndex.index.get(anchor);
-}
 /**
  * E_ANCHOR_STALE feedback: serve a bounded fresh anchored view so the
  * retry has current authorization, and return the formatted error message.
