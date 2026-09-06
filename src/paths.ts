@@ -29,7 +29,7 @@ export function stateDir(): string {
 function expand(filePath: string): string {
   const home = homeBase();
   if (filePath === "~") return home;
-  if (filePath.startsWith("~/")) return home + filePath.slice(1);
+  if (filePath.startsWith("~/") || filePath.startsWith("~\\")) return home + filePath.slice(1);
   return filePath;
 }
 
