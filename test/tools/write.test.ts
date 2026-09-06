@@ -1,20 +1,26 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync } from "fs";
 import { join } from "path";
 import { withStateDir } from "../support/env";
-import { makeProject, readFileAt, runTool, textOf, writeFileAt, anchorsFromRead } from "../support/tools";
+import {
+  makeProject,
+  readFileAt,
+  runTool,
+  textOf,
+  writeFileAt,
+  anchorsFromRead,
+} from "../support/tools";
 
 import { resetStoreForTests } from "../../src/state/database";
 import { resetServed, servedText } from "../../src/served/ledger";
 import { buildReadToolDef } from "../../src/tools/read";
 import { buildWriteToolDef } from "../../src/tools/write";
 import { buildUndoToolDef } from "../../src/tools/undo";
+import { getSnapshot } from "../../src/state/snapshots";
 
 const readTool = buildReadToolDef();
 const writeTool = buildWriteToolDef();
 const undoTool = buildUndoToolDef();
-
-;
 
 beforeEach(() => {
   withStateDir();
@@ -40,11 +46,26 @@ describe("write tool (spec §31.8, PH-WRITE-001..003)", () => {
     // Preview rows carry anchors and become served.
     const anchors = anchorsFromRead(text);
     expect(anchors.get("alpha")).toBeDefined();
-    expect(servedText(join(dir, "new.ts"), anchors.get("alpha")!)).toBe("alpha");
+    expect(servedText(join(dir, "new.ts"), anchors.get("alpha")!)).toBe(
+      "alpha",
+    );
     // details.hashline marker (PH-PROTO-003).
     const hashline = result.details?.hashline as Record<string, unknown>;
     expect(hashline?.protocol).toBe("pi-hashline-result/1");
     expect(hashline?.outcome).toBe("success");
+  });
+
+  it("retires the synthetic empty-line anchor after creating content", async () => {
+    const dir = makeProject();
+    const result = await runTool(
+      writeTool,
+      { path: "new.ts", content: "alpha\n" },
+      dir,
+    );
+    const active = anchorsFromRead(textOf(result)).get("alpha")!;
+    const snapshot = getSnapshot(join(dir, "new.ts"));
+    expect(snapshot?.retired.size).toBe(1);
+    expect(snapshot?.retired.has(active)).toBe(false);
   });
 
   it("rejects overwriting an existing file without full-file authorization", async () => {
@@ -121,11 +142,15 @@ describe("write tool (spec §31.8, PH-WRITE-001..003)", () => {
 
   it("rejects malformed shapes", async () => {
     const dir = makeProject();
+    await expect(runTool(writeTool, { path: "a.ts" }, dir)).rejects.toThrow(
+      /E_BAD_SHAPE/,
+    );
     await expect(
-      runTool(writeTool, { path: "a.ts" }, dir),
-    ).rejects.toThrow(/E_BAD_SHAPE/);
-    await expect(
-      runTool(writeTool, { path: "a.ts", content: "x", replace_existing: "yes" }, dir),
+      runTool(
+        writeTool,
+        { path: "a.ts", content: "x", replace_existing: "yes" },
+        dir,
+      ),
     ).rejects.toThrow(/E_BAD_SHAPE/);
   });
 
@@ -169,7 +194,11 @@ describe("write tool (spec §31.8, PH-WRITE-001..003)", () => {
   it("rejects display-like content with E_DISPLAY_LIKE_CONTENT and writes nothing", async () => {
     const dir = makeProject();
     await expect(
-      runTool(writeTool, { path: "notes.md", content: "plain\nAb31│pasted row\n" }, dir),
+      runTool(
+        writeTool,
+        { path: "notes.md", content: "plain\nAb31│pasted row\n" },
+        dir,
+      ),
     ).rejects.toThrow(/E_DISPLAY_LIKE_CONTENT/);
     expect(existsSync(join(dir, "notes.md"))).toBe(false);
   });
@@ -178,7 +207,11 @@ describe("write tool (spec §31.8, PH-WRITE-001..003)", () => {
     const dir = makeProject();
     const result = await runTool(
       writeTool,
-      { path: "notes.md", content: "Ab31│literal row\nplain\n", allow_display_like_content: true },
+      {
+        path: "notes.md",
+        content: "Ab31│literal row\nplain\n",
+        allow_display_like_content: true,
+      },
       dir,
     );
     expect(result.isError).toBeFalsy();

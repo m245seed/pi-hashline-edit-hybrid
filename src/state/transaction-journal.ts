@@ -78,15 +78,27 @@ function encodeState(state: PendingState): {
   };
 }
 
-function decodeState(row: PendingRow, prefix: "before" | "after"): PendingState {
+function decodeState(
+  row: PendingRow,
+  prefix: "before" | "after",
+): PendingState {
   const anchors = row[`${prefix}_anchors`];
   const fingerprints = row[`${prefix}_fingerprints`];
   const retired = row[`${prefix}_retired`];
   const lineCount = row[`${prefix}_line_count`];
+  const decodedAnchors = decodeAnchorsBlob(anchors, lineCount);
+  const decodedRetired = decodeRetiredBlob(retired);
+  for (const anchor of decodedAnchors) {
+    if (decodedRetired.has(anchor)) {
+      throw new Error(
+        `Corrupt pending transaction: ${prefix} anchor is retired`,
+      );
+    }
+  }
   return {
-    anchors: decodeAnchorsBlob(anchors, lineCount),
+    anchors: decodedAnchors,
     fingerprints: decodeFingerprintsBlob(fingerprints, lineCount),
-    retired: decodeRetiredBlob(retired),
+    retired: decodedRetired,
     lineCount,
   };
 }
@@ -109,29 +121,25 @@ export function insertPendingTransaction(entry: PendingTransaction): void {
            created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
-        entry.transactionId,
-        entry.path,
-        entry.beforeChecksum,
-        entry.afterChecksum,
-        before.anchors,
-        before.fingerprints,
-        before.retired,
-        entry.before.lineCount,
-        after.anchors,
-        after.fingerprints,
-        after.retired,
-        entry.after.lineCount,
-        entry.undo?.beforeBytes ?? null,
-        entry.undo?.afterChecksum ?? null,
-        entry.undo
-          ? encodeAnchorsBlob(entry.undo.beforeAnchors)
-          : null,
-        entry.undo
-          ? encodeFingerprintsBlob(entry.undo.beforeFingerprints)
-          : null,
-        entry.undo ? encodeRetiredBlob(entry.undo.beforeRetired) : null,
-        entry.createdAt,
-      ),
+      entry.transactionId,
+      entry.path,
+      entry.beforeChecksum,
+      entry.afterChecksum,
+      before.anchors,
+      before.fingerprints,
+      before.retired,
+      entry.before.lineCount,
+      after.anchors,
+      after.fingerprints,
+      after.retired,
+      entry.after.lineCount,
+      entry.undo?.beforeBytes ?? null,
+      entry.undo?.afterChecksum ?? null,
+      entry.undo ? encodeAnchorsBlob(entry.undo.beforeAnchors) : null,
+      entry.undo ? encodeFingerprintsBlob(entry.undo.beforeFingerprints) : null,
+      entry.undo ? encodeRetiredBlob(entry.undo.beforeRetired) : null,
+      entry.createdAt,
+    ),
   );
 }
 
@@ -139,37 +147,70 @@ export function listPendingTransactions(): PendingTransaction[] {
   const rows = cachedPrepare(
     `SELECT * FROM pending_transactions ORDER BY created_at`,
   ).all() as unknown as PendingRow[];
-  return rows.map((row) => ({
-    transactionId: row.transaction_id,
-    path: row.path,
-    beforeChecksum: row.before_checksum,
-    afterChecksum: row.after_checksum,
-    before: decodeState(row, "before"),
-    after: decodeState(row, "after"),
-    undo:
-      row.undo_before_bytes !== null && row.undo_after_checksum !== null
-        ? (() => {
-            const lineCount = row.undo_before_anchors!.length / 4;
-            return {
-              beforeBytes: Buffer.from(row.undo_before_bytes),
-              afterChecksum: row.undo_after_checksum,
-              beforeAnchors: decodeAnchorsBlob(row.undo_before_anchors!, lineCount),
-              beforeFingerprints: decodeFingerprintsBlob(
-                row.undo_before_fingerprints!,
-                lineCount,
-              ),
-              beforeRetired: decodeRetiredBlob(row.undo_before_retired!),
-            };
-          })()
-        : null,
-    createdAt: row.created_at,
-  }));
+  return rows.map((row) => {
+    const undoFields = [
+      row.undo_before_bytes,
+      row.undo_after_checksum,
+      row.undo_before_anchors,
+      row.undo_before_fingerprints,
+      row.undo_before_retired,
+    ];
+    const hasUndoField = undoFields.some((field) => field !== null);
+    const hasCompleteUndo = undoFields.every((field) => field !== null);
+    if (hasUndoField && !hasCompleteUndo) {
+      throw new Error("Corrupt pending transaction: incomplete undo payload");
+    }
+    const undo = hasCompleteUndo
+      ? (() => {
+          const lineCount = row.undo_before_anchors!.length / 4;
+          const beforeAnchors = decodeAnchorsBlob(
+            row.undo_before_anchors!,
+            lineCount,
+          );
+          const beforeRetired = decodeRetiredBlob(row.undo_before_retired!);
+          if (beforeAnchors.some((anchor) => beforeRetired.has(anchor))) {
+            throw new Error(
+              "Corrupt pending transaction: undo anchor is retired",
+            );
+          }
+          return {
+            beforeBytes: Buffer.from(row.undo_before_bytes!),
+            afterChecksum: row.undo_after_checksum!,
+            beforeAnchors,
+            beforeFingerprints: decodeFingerprintsBlob(
+              row.undo_before_fingerprints!,
+              lineCount,
+            ),
+            beforeRetired,
+          };
+        })()
+      : null;
+    return {
+      transactionId: row.transaction_id,
+      path: row.path,
+      beforeChecksum: row.before_checksum,
+      afterChecksum: row.after_checksum,
+      before: decodeState(row, "before"),
+      after: decodeState(row, "after"),
+      undo,
+      createdAt: row.created_at,
+    };
+  });
 }
 
 export function deletePendingTransaction(transactionId: string): void {
   withBusyRetry(() =>
-    cachedPrepare(`DELETE FROM pending_transactions WHERE transaction_id = ?`).run(
-      transactionId,
-    ),
+    cachedPrepare(
+      `DELETE FROM pending_transactions WHERE transaction_id = ?`,
+    ).run(transactionId),
   );
+}
+
+/** Use only inside an existing withTransaction callback. */
+export function deletePendingTransactionInTransaction(
+  transactionId: string,
+): void {
+  cachedPrepare(
+    `DELETE FROM pending_transactions WHERE transaction_id = ?`,
+  ).run(transactionId);
 }

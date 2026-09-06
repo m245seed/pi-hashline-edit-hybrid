@@ -1,8 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { withStateDir } from "../support/env";
-import { makeProject, runTool, textOf, writeFileAt, readFileAt, anchorsFromRead } from "../support/tools";
+import {
+  makeProject,
+  runTool,
+  textOf,
+  writeFileAt,
+  readFileAt,
+  anchorsFromRead,
+} from "../support/tools";
 
-import { resetStoreForTests } from "../../src/state/database";
+import { loadStore, resetStoreForTests } from "../../src/state/database";
 import { resetServed } from "../../src/served/ledger";
 import { buildReadToolDef } from "../../src/tools/read";
 import { buildEditToolDef } from "../../src/tools/edit";
@@ -19,12 +26,11 @@ import { decodeDocument } from "../../src/document/encoding";
 import { applyTransaction } from "../../src/mutation/apply";
 import { fingerprintHexes } from "../../src/anchors/fingerprints";
 import { sha256Hex } from "../../src/utils";
+import { MAX_LINES } from "../../src/constants";
 
 const readTool = buildReadToolDef();
 const editTool = buildEditToolDef();
 const insertTool = buildInsertToolDef();
-
-;
 
 beforeEach(() => {
   withStateDir();
@@ -62,7 +68,9 @@ describe("transaction edge cases (spec §47, §52)", () => {
         checksumAfter: sha256Hex(afterRaw),
         docAfter: result.document,
         anchorsAfter: result.anchors,
-        fingerprintsAfter: fingerprintHexes(result.document.lines.map((l) => l.text)),
+        fingerprintsAfter: fingerprintHexes(
+          result.document.lines.map((l) => l.text),
+        ),
         retiredAfter: new Set([...file.retired, ...result.retiredAdded]),
         transactionId: newTransactionId(),
         signal: abortController.signal,
@@ -71,6 +79,46 @@ describe("transaction edge cases (spec §47, §52)", () => {
       }),
     ).rejects.toThrow(/E_ABORTED/);
     expect(readFileAt(path)).toBe("one\ntwo\n");
+  });
+
+  it("rejects an oversized post-mutation document before journaling", async () => {
+    const dir = makeProject();
+    const path = writeFileAt(dir, "a.ts", "one\n");
+    const file = await loadAnchoredFile(path, "a.ts");
+    const docAfter = {
+      bom: "",
+      lines: Array.from({ length: MAX_LINES + 1 }, () => ({
+        text: "x",
+        eol: "\n" as const,
+      })),
+    };
+    await expect(
+      commitMutation({
+        realPath: path,
+        label: "a.ts",
+        rawBefore: file.raw,
+        checksumBefore: file.checksum,
+        docBefore: file.doc,
+        anchorsBefore: file.anchors,
+        fingerprintsBefore: file.fingerprints,
+        retiredBefore: file.retired,
+        rawAfter: Buffer.from("x\n", "utf-8"),
+        checksumAfter: sha256Hex(Buffer.from("x\n", "utf-8")),
+        docAfter,
+        anchorsAfter: [],
+        fingerprintsAfter: [],
+        retiredAfter: new Set(),
+        transactionId: newTransactionId(),
+        keepUndo: true,
+        warnings: [],
+      }),
+    ).rejects.toThrow(/E_FILE_TOO_LARGE/);
+    expect(readFileAt(path)).toBe("one\n");
+    const store = await loadStore();
+    const pendingRow = store.db
+      .prepare("SELECT COUNT(*) AS n FROM pending_transactions")
+      .get() as { n: number };
+    expect(pendingRow.n).toBe(0);
   });
 
   it("produces the anchor-space pressure warning near exhaustion", () => {
@@ -94,7 +142,11 @@ describe("transaction edge cases (spec §47, §52)", () => {
     const anchor = anchorsFromRead(textOf(read)).get("one")!;
     const result = await runTool(
       insertTool,
-      { path: "a.ts", inserts: [{ anchor, direction: "after", lines: ["x"] }], final_newline: "absent" },
+      {
+        path: "a.ts",
+        inserts: [{ anchor, direction: "after", lines: ["x"] }],
+        final_newline: "absent",
+      },
       dir,
     );
     expect(result.isError).toBeFalsy();
@@ -121,14 +173,22 @@ describe("transaction edge cases (spec §47, §52)", () => {
     await expect(
       runTool(
         insertTool,
-        { path: "a.ts", inserts: [{ anchor: "Ab12", direction: "after", lines: ["x"] }], allow_display_like_content: "yes" },
+        {
+          path: "a.ts",
+          inserts: [{ anchor: "Ab12", direction: "after", lines: ["x"] }],
+          allow_display_like_content: "yes",
+        },
         dir,
       ),
     ).rejects.toThrow(/E_BAD_SHAPE/);
     await expect(
       runTool(
         insertTool,
-        { path: "a.ts", inserts: [{ anchor: "Ab12", direction: "after", lines: ["x"] }], expected_revision: "zzz" },
+        {
+          path: "a.ts",
+          inserts: [{ anchor: "Ab12", direction: "after", lines: ["x"] }],
+          expected_revision: "zzz",
+        },
         dir,
       ),
     ).rejects.toThrow(/E_BAD_SHAPE/);
@@ -137,9 +197,15 @@ describe("transaction edge cases (spec §47, §52)", () => {
   it("validates read offset/limit strictly", async () => {
     const dir = makeProject();
     writeFileAt(dir, "a.ts", "one\n");
-    await expect(runTool(readTool, { path: "a.ts", offset: 0 }, dir)).rejects.toThrow(/E_BAD_SHAPE/);
-    await expect(runTool(readTool, { path: "a.ts", limit: 1.5 }, dir)).rejects.toThrow(/E_BAD_SHAPE/);
-    await expect(runTool(readTool, { path: "" }, dir)).rejects.toThrow(/E_BAD_SHAPE/);
+    await expect(
+      runTool(readTool, { path: "a.ts", offset: 0 }, dir),
+    ).rejects.toThrow(/E_BAD_SHAPE/);
+    await expect(
+      runTool(readTool, { path: "a.ts", limit: 1.5 }, dir),
+    ).rejects.toThrow(/E_BAD_SHAPE/);
+    await expect(runTool(readTool, { path: "" }, dir)).rejects.toThrow(
+      /E_BAD_SHAPE/,
+    );
   });
 
   it("rejects edit payloads with unpaired surrogates via the tool", async () => {
@@ -150,7 +216,10 @@ describe("transaction edge cases (spec §47, §52)", () => {
     await expect(
       runTool(
         editTool,
-        { path: "a.ts", edits: [{ range: [anchor, anchor], lines: ["a\uD800b"] }] },
+        {
+          path: "a.ts",
+          edits: [{ range: [anchor, anchor], lines: ["a\uD800b"] }],
+        },
         dir,
       ),
     ).rejects.toThrow(/E_BAD_SHAPE/);

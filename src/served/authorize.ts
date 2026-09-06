@@ -22,15 +22,15 @@
  * protections (PH-OUTPUT-008).
  */
 
-import { MAX_FEEDBACK_LINES, MAX_DISPLAY_LINE_BYTES } from "../constants";
-import { HASH_SEP } from "../anchors/alphabet";
-import { formatSize } from "../utils";
+import { MAX_FEEDBACK_LINES, READ_MAX_OUTPUT_BYTES } from "../constants";
+import { renderLinesBounded } from "../render/engine";
 import { getLedger, getStaleSet, serveLines } from "./ledger";
 import { getContextEpoch } from "./epoch";
 
 export interface RangeCheck {
   ok: boolean;
-  code: "E_ANCHOR_NOT_SERVED" | "E_RANGE_STALE" | "E_CONTEXT_EPOCH_STALE" | null;
+  code:
+    "E_ANCHOR_NOT_SERVED" | "E_RANGE_STALE" | "E_CONTEXT_EPOCH_STALE" | null;
   /** 0-based line indexes that failed, first group (unserved, then stale). */
   unserved: number[];
   stale: number[];
@@ -98,27 +98,20 @@ export function feedbackRange(
 ): string {
   const total = endLine - startLine + 1;
   const shown = Math.min(total, MAX_FEEDBACK_LINES);
-  const rows: string[] = [];
-  const served: Array<{ anchor: string; exactText: string; lineIndex: number }> = [];
-  for (let line = startLine; line < startLine + shown; line++) {
-    const anchor = anchors[line]!;
-    const text = texts[line]!;
-    const bytes = Buffer.byteLength(text, "utf-8");
-    if (bytes > MAX_DISPLAY_LINE_BYTES) {
-      rows.push(
-        `[Line ${line + 1} omitted: ${formatSize(bytes)}. Not authorized for edits.]`,
-      );
-      continue;
-    }
-    served.push({ anchor, exactText: text, lineIndex: line });
-    rows.push(`${anchor}${HASH_SEP}${text}`);
-  }
-  serveLines(path, served);
-  const capHint =
-    total > shown
+  const bounded = renderLinesBounded(
+    anchors,
+    texts,
+    startLine,
+    startLine + shown,
+    READ_MAX_OUTPUT_BYTES,
+  );
+  serveLines(path, bounded.served);
+  const capHint = bounded.truncated
+    ? `\n\n[The range output was truncated at the ${READ_MAX_OUTPUT_BYTES / 1024}KB budget. Use read with offset=${bounded.nextLine + 1} to continue.]`
+    : total > shown
       ? `\n\n[The range has ${total} lines; showing the first ${shown}. Use read with offset=${startLine + shown + 1} to see the rest.]`
       : "";
-  return `${rows.join("\n")}${capHint}`;
+  return `${bounded.text}${capHint}`;
 }
 
 export function formatRangeFailure(

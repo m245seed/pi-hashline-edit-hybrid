@@ -41,6 +41,9 @@ const ledger: ServedLedger = new Map();
  */
 const staleAnchors: Map<string, Set<string>> = new Map();
 
+/** Global insertion/refresh order for the bounded served ledger. */
+const globalOrder = new Map<string, { path: string; anchor: string }>();
+
 export function getLedger(): ServedLedger {
   return ledger;
 }
@@ -57,26 +60,37 @@ export interface ServeEntryInput {
 const MAX_SERVED_PER_FILE = 5000;
 const MAX_SERVED_TOTAL = 20000;
 
+function globalKey(path: string, anchor: string): string {
+  return `${path}\u0000${anchor}`;
+}
+
+function removeEntry(path: string, anchor: string): void {
+  const file = ledger.get(path);
+  file?.delete(anchor);
+  globalOrder.delete(globalKey(path, anchor));
+  if (file && file.size === 0) ledger.delete(path);
+}
+
 function evictIfNeeded(): void {
-  // Per-file eviction already handled in putEntry/serveLines; this handles
-  // global overflow by evicting oldest entries across files in insertion order.
-  let total = 0;
-  for (const file of ledger.values()) total += file.size;
-  if (total <= MAX_SERVED_TOTAL) return;
-  for (const [path, file] of ledger) {
-    while (file.size > 0 && total > MAX_SERVED_TOTAL) {
-      const oldest = file.keys().next().value as string | undefined;
-      if (oldest === undefined) break;
-      file.delete(oldest);
-      total--;
-    }
-    if (file.size === 0) ledger.delete(path);
-    if (total <= MAX_SERVED_TOTAL) break;
+  while (globalOrder.size > MAX_SERVED_TOTAL) {
+    const oldest = globalOrder.values().next().value as
+      { path: string; anchor: string } | undefined;
+    if (oldest === undefined) break;
+    removeEntry(oldest.path, oldest.anchor);
   }
 }
 
-export function serveLine(path: string, anchor: string, exactText: string, lineIndex?: number): void {
-  const entry: ServedEntry = { exactText, epoch: getContextEpoch(), servedAt: new Date().toISOString() };
+export function serveLine(
+  path: string,
+  anchor: string,
+  exactText: string,
+  lineIndex?: number,
+): void {
+  const entry: ServedEntry = {
+    exactText,
+    epoch: getContextEpoch(),
+    servedAt: new Date().toISOString(),
+  };
   if (lineIndex !== undefined) entry.lastKnownLineIndex = lineIndex;
   putEntry(path, anchor, entry);
 }
@@ -89,45 +103,42 @@ function putEntry(path: string, anchor: string, entry: ServedEntry): void {
     ledger.set(path, file);
   }
   // Refresh LRU order: delete then set moves to end
-  if (file.has(anchor)) file.delete(anchor);
+  if (file.has(anchor)) {
+    file.delete(anchor);
+    globalOrder.delete(globalKey(path, anchor));
+  }
   file.set(anchor, entry);
+  globalOrder.set(globalKey(path, anchor), { path, anchor });
   // Per-file cap
   while (file.size > MAX_SERVED_PER_FILE) {
     const oldest = file.keys().next().value as string | undefined;
     if (oldest === undefined) break;
-    file.delete(oldest);
+    removeEntry(path, oldest);
   }
   evictIfNeeded();
 }
 
-export function serveLines(path: string, entries: Array<ServeEntryInput>): number {
+export function serveLines(
+  path: string,
+  entries: Array<ServeEntryInput>,
+): number {
   if (entries.length === 0) return 0;
-  let file = ledger.get(path);
-  if (!file) {
-    file = new Map();
-    ledger.set(path, file);
-  }
   const epoch = getContextEpoch();
   const servedAt = new Date().toISOString();
   for (const entry of entries) {
     const stored: ServedEntry = { exactText: entry.exactText, epoch, servedAt };
-    if (entry.lineIndex !== undefined) stored.lastKnownLineIndex = entry.lineIndex;
-    if (file.has(entry.anchor)) file.delete(entry.anchor);
-    file.set(entry.anchor, stored);
+    if (entry.lineIndex !== undefined)
+      stored.lastKnownLineIndex = entry.lineIndex;
+    putEntry(path, entry.anchor, stored);
   }
-  while (file.size > MAX_SERVED_PER_FILE) {
-    const oldest = file.keys().next().value as string | undefined;
-    if (oldest === undefined) break;
-    file.delete(oldest);
-  }
-  evictIfNeeded();
   // Rows shown in THIS call must remain editable: count how many were
   // evicted by the per-file or global caps so callers can warn the model —
   // an evicted row fails edits with E_ANCHOR_NOT_SERVED despite having
   // just been displayed.
   let evictedNow = 0;
+  const file = ledger.get(path);
   for (const entry of entries) {
-    if (!file.has(entry.anchor)) evictedNow++;
+    if (!file?.has(entry.anchor)) evictedNow++;
   }
   return evictedNow;
 }
@@ -138,7 +149,7 @@ export function serveLines(path: string, entries: Array<ServeEntryInput>): numbe
  * so they are not edit-authorized until re-read.
  */
 export function servedWindowNotice(evicted: number): string {
-  return `\n\n[W_SERVED_WINDOW_EXCEEDED] ${evicted} of the rows shown above exceeded the ${MAX_SERVED_PER_FILE}-line served window for this file and were evicted; they are not authorized for edits. Re-read the range with read before editing those lines.`;
+  return `\n\n[W_SERVED_WINDOW_EXCEEDED] ${evicted} of the rows shown above exceeded the served window (${MAX_SERVED_PER_FILE} lines per file, ${MAX_SERVED_TOTAL} total) and were evicted; they are not authorized for edits. Re-read the range with read before editing those lines.`;
 }
 
 /** Exact text previously served for (path, anchor), or undefined. */
@@ -147,7 +158,10 @@ export function servedText(path: string, anchor: string): string | undefined {
 }
 
 /** Full served entry (text + epoch) for (path, anchor), or undefined. */
-export function servedEntry(path: string, anchor: string): ServedEntry | undefined {
+export function servedEntry(
+  path: string,
+  anchor: string,
+): ServedEntry | undefined {
   return ledger.get(path)?.get(anchor);
 }
 
@@ -172,6 +186,12 @@ export function getStaleSet(path: string): ReadonlySet<string> | undefined {
 }
 
 export function clearServedPath(path: string): void {
+  const file = ledger.get(path);
+  if (file) {
+    for (const anchor of file.keys()) {
+      globalOrder.delete(globalKey(path, anchor));
+    }
+  }
   ledger.delete(path);
   staleAnchors.delete(path);
 }
@@ -186,15 +206,17 @@ export function pruneServedPath(
 ): void {
   const file = ledger.get(path);
   if (!file) return;
-  for (const [anchor, entry] of file) {
+  for (const [anchor, entry] of [...file]) {
     if (current.get(anchor) !== entry.exactText) {
-      file.delete(anchor);
+      removeEntry(path, anchor);
     }
   }
+  if (file.size === 0) ledger.delete(path);
 }
 /** Test helper. */
 export function resetServed(): void {
   ledger.clear();
+  globalOrder.clear();
   staleAnchors.clear();
 }
 
@@ -217,13 +239,24 @@ export function reconcileServed(
   newAnchors: readonly string[],
   newTexts: readonly string[],
 ): void {
+  // Transfers can themselves evict entries when the new document grows past
+  // the global cap. Snapshot the old authorization first so stale-gap
+  // detection cannot depend on transfer order.
+  const servedOld = new Map<string, ServedEntry>();
+  for (const anchor of oldAnchors) {
+    const entry = servedEntry(path, anchor);
+    if (entry !== undefined) servedOld.set(anchor, entry);
+  }
   for (const [newIdx, oldIdx] of mapping) {
-    const oldEntry = servedEntry(path, oldAnchors[oldIdx]!);
+    const oldEntry = servedOld.get(oldAnchors[oldIdx]!);
     if (oldEntry !== undefined && oldEntry.exactText === newTexts[newIdx]!) {
       // Transfer the authorization as-is, preserving the epoch it was
       // actually served in (PH-CONTEXT-003): an external change must never
       // refresh an older epoch's authorization.
-      putEntry(path, newAnchors[newIdx]!, { ...oldEntry, lastKnownLineIndex: newIdx });
+      putEntry(path, newAnchors[newIdx]!, {
+        ...oldEntry,
+        lastKnownLineIndex: newIdx,
+      });
     }
   }
   if (oldAnchors.length === 0) return;
@@ -231,7 +264,7 @@ export function reconcileServed(
   const isServedOld = new Uint8Array(oldAnchors.length);
   let hasServed = false;
   for (let i = 0; i < oldAnchors.length; i++) {
-    if (servedText(path, oldAnchors[i]!) !== undefined) {
+    if (servedOld.has(oldAnchors[i]!)) {
       isServedOld[i] = 1;
       hasServed = true;
     }
@@ -246,7 +279,8 @@ export function reconcileServed(
     // No anchors preserved: whole old gap contains served line -> all new lines stale
     const gapHasServed = prefix[oldAnchors.length]! - prefix[0]! > 0;
     if (gapHasServed) {
-      for (let j = 0; j < newAnchors.length; j++) markStale(path, newAnchors[j]!);
+      for (let j = 0; j < newAnchors.length; j++)
+        markStale(path, newAnchors[j]!);
     }
     return;
   }
@@ -261,9 +295,14 @@ export function reconcileServed(
     if (mapping.has(j)) continue;
     while (p + 1 < sortedEntries.length && sortedEntries[p + 1]![0] < j) p++;
     const prevOld = p >= 0 ? sortedEntries[p]![1] : -1;
-    const nextOld = p + 1 < sortedEntries.length ? sortedEntries[p + 1]![1] : oldAnchors.length;
+    const nextOld =
+      p + 1 < sortedEntries.length
+        ? sortedEntries[p + 1]![1]
+        : oldAnchors.length;
     const gapHasServed =
-      prefix[Math.max(prevOld, nextOld)]! - prefix[Math.min(prevOld, nextOld) + 1]! > 0;
+      prefix[Math.max(prevOld, nextOld)]! -
+        prefix[Math.min(prevOld, nextOld) + 1]! >
+      0;
     if (gapHasServed) markStale(path, newAnchors[j]!);
   }
 }

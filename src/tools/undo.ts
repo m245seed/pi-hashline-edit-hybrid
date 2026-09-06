@@ -16,16 +16,25 @@ import { readFile } from "fs/promises";
 import { HASHLINE_PROTOCOL_ID } from "../constants";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { abortIf, errCode, isRec, rejectUnknownFields, sha256Hex } from "../utils";
+import {
+  abortIf,
+  errCode,
+  isRec,
+  rejectUnknownFields,
+  sha256Hex,
+} from "../utils";
 import { withFileMutationQueue } from "../filesystem/resolve-target";
-import { resolveMutationTarget, buildMutationMetrics, renderAndServeDiffRows } from "./shared";
+import {
+  resolveMutationTarget,
+  buildMutationMetrics,
+  renderAndServeDiffRows,
+} from "./shared";
 import { loadStore } from "../state/database";
 import { getUndoRecord } from "../state/undo";
 import { decodeDocument } from "../document/encoding";
+import { assertPath } from "../mutation/validate";
 import { buildDiffRows } from "../mutation/apply";
-import {
-  commitMutation,
-} from "../mutation/transaction";
+import { commitMutation } from "../mutation/transaction";
 import { newTransactionId } from "../state/transaction-journal";
 import { hashlineDetails } from "../render/result-details";
 import type { MutationMetrics } from "./shared";
@@ -63,21 +72,23 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
     async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
       const params = rawParams as Record<string, unknown>;
       if (!isRec(params)) {
-        throw new Error('[E_BAD_SHAPE] undo parameters must be an object.');
+        throw new Error("[E_BAD_SHAPE] undo parameters must be an object.");
       }
       rejectUnknownFields(params, UNDO_ROOT_KEYS, "undo request");
-      if (typeof params?.path !== "string" || params.path.length === 0) {
-        throw new Error('[E_BAD_SHAPE] A non-empty "path" string is required.');
-      }
-      const requestPath = params.path as string;
-      const mutationTargetPath = await resolveMutationTarget(requestPath, ctx.cwd);
+      const requestPath = assertPath(params.path);
+      const mutationTargetPath = await resolveMutationTarget(
+        requestPath,
+        ctx.cwd,
+      );
 
       return withFileMutationQueue(mutationTargetPath, async () => {
         abortIf(signal);
         await loadStore();
         const record = getUndoRecord(mutationTargetPath);
         if (!record) {
-          throw new Error(`[E_NO_UNDO] No undoable hybrid transaction for ${requestPath}. Nothing was modified.`);
+          throw new Error(
+            `[E_NO_UNDO] No undoable hybrid transaction for ${requestPath}. Nothing was modified.`,
+          );
         }
 
         let raw: Buffer;
@@ -85,13 +96,17 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
           raw = await readFile(mutationTargetPath);
         } catch (error: unknown) {
           if (errCode(error) === "ENOENT") {
-            throw new Error(`[E_UNDO_STALE] The file ${requestPath} no longer exists. Nothing was modified.`);
+            throw new Error(
+              `[E_UNDO_STALE] The file ${requestPath} no longer exists. Nothing was modified.`,
+            );
           }
           throw error;
         }
         const currentChecksum = sha256Hex(raw);
         if (currentChecksum !== record.afterChecksum) {
-          throw new Error(`[E_UNDO_STALE] The file has changed since the transaction. Nothing was modified. Undo never overwrites later modifications.`);
+          throw new Error(
+            `[E_UNDO_STALE] The file has changed since the transaction. Nothing was modified. Undo never overwrites later modifications.`,
+          );
         }
 
         const afterDoc = decodeDocument(record.beforeBytes, requestPath);
@@ -139,7 +154,10 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
           keepUndo: false,
           warnings: [],
         });
-        const { text: diffText, servedRows } = renderAndServeDiffRows(diffRows, mutationTargetPath);
+        const { text: diffText, servedRows } = renderAndServeDiffRows(
+          diffRows,
+          mutationTargetPath,
+        );
         let linesAdded = 0;
         let linesRemoved = 0;
         for (const row of diffRows) {
@@ -158,9 +176,7 @@ export function buildUndoToolDef(): ToolDefinition<any, UndoToolDetails> {
           afterRevision: afterChecksum,
           transactionId,
         });
-        const text =
-          `Undone the last transaction on ${requestPath}. The file was restored to its exact previous bytes and anchors.\n\n${diffText}`;
-        
+        const text = `Undone the last transaction on ${requestPath}. The file was restored to its exact previous bytes and anchors.\n\n${diffText}`;
 
         return {
           content: [{ type: "text", text }],

@@ -1,25 +1,45 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { withStateDir } from "../support/env";
-import { makeProject, runTool, textOf, writeFileAt, readFileAt, anchorsFromRead } from "../support/tools";
+import {
+  makeProject,
+  runTool,
+  textOf,
+  writeFileAt,
+  readFileAt,
+  anchorsFromRead,
+} from "../support/tools";
 
 import { resetStoreForTests, loadStore } from "../../src/state/database";
 import { resetServed } from "../../src/served/ledger";
 import { buildReadToolDef } from "../../src/tools/read";
 import { buildEditToolDef } from "../../src/tools/edit";
-import { loadAnchoredFile, commitMutation } from "../../src/mutation/transaction";
+import {
+  loadAnchoredFile,
+  commitMutation,
+} from "../../src/mutation/transaction";
 import { newTransactionId } from "../../src/state/transaction-journal";
-import { encodeDocument } from "../../src/document/encoding";
+import { decodeDocument, encodeDocument } from "../../src/document/encoding";
 import { fingerprintHexes } from "../../src/anchors/fingerprints";
 import { applyTransaction } from "../../src/mutation/apply";
 import { sha256Hex } from "../../src/utils";
-import { clearSweptDirsForTests, writeInPlace, precommitVerify } from "../../src/filesystem/atomic-write";
+import {
+  clearSweptDirsForTests,
+  writeInPlace,
+  precommitVerify,
+} from "../../src/filesystem/atomic-write";
 import { join } from "path";
-import { linkSync, symlinkSync, statSync, readlinkSync, unlinkSync, writeFileSync, readFileSync } from "fs";
+import {
+  linkSync,
+  symlinkSync,
+  statSync,
+  readlinkSync,
+  unlinkSync,
+  writeFileSync,
+  readFileSync,
+} from "fs";
 
 const readTool = buildReadToolDef();
 const editTool = buildEditToolDef();
-
-;
 
 beforeEach(() => {
   withStateDir();
@@ -70,7 +90,9 @@ describe("filesystem behaviors (spec §43–§46)", () => {
     const dir = makeProject();
     symlinkSync(join(dir, "a.ts"), join(dir, "b.ts"));
     symlinkSync(join(dir, "b.ts"), join(dir, "a.ts"));
-    await expect(runTool(readTool, { path: "a.ts" }, dir)).rejects.toThrow(/ELOOP|Too many symbolic links/);
+    await expect(runTool(readTool, { path: "a.ts" }, dir)).rejects.toThrow(
+      /ELOOP|Too many symbolic links/,
+    );
   });
 
   it("preserves hard links by writing in place with a warning", async () => {
@@ -120,8 +142,20 @@ describe("filesystem behaviors (spec §43–§46)", () => {
     const file = await loadAnchoredFile(path, "a.ts");
     // Simulate an external writer racing between read and commit.
     writeFileAt(dir, "a.ts", "one\ntwo\nthree\n");
-    const ops = [{ kind: "edit" as const, start: 0, end: 0, lines: ["ONE"], requestIndex: 0 }];
-    const result = applyTransaction(file.doc, { anchors: file.anchors, retired: file.retired }, ops);
+    const ops = [
+      {
+        kind: "edit" as const,
+        start: 0,
+        end: 0,
+        lines: ["ONE"],
+        requestIndex: 0,
+      },
+    ];
+    const result = applyTransaction(
+      file.doc,
+      { anchors: file.anchors, retired: file.retired },
+      ops,
+    );
     const afterRaw = Buffer.from(encodeDocument(result.document), "utf-8");
     await expect(
       commitMutation({
@@ -137,7 +171,9 @@ describe("filesystem behaviors (spec §43–§46)", () => {
         checksumAfter: sha256Hex(afterRaw),
         docAfter: result.document,
         anchorsAfter: result.anchors,
-        fingerprintsAfter: fingerprintHexes(result.document.lines.map((l) => l.text)),
+        fingerprintsAfter: fingerprintHexes(
+          result.document.lines.map((l) => l.text),
+        ),
         retiredAfter: new Set([...file.retired, ...result.retiredAdded]),
         transactionId: newTransactionId(),
         keepUndo: true,
@@ -147,7 +183,9 @@ describe("filesystem behaviors (spec §43–§46)", () => {
     // The file keeps the external content; the journal was rolled back.
     expect(readFileAt(path)).toBe("one\ntwo\nthree\n");
     const store = await loadStore();
-    const pendingCount = store.db.prepare("SELECT COUNT(*) AS n FROM pending_transactions").get()!.n as number;
+    const pendingCount = store.db
+      .prepare("SELECT COUNT(*) AS n FROM pending_transactions")
+      .get()!.n as number;
     expect(pendingCount).toBe(0);
   });
 
@@ -177,8 +215,20 @@ describe("filesystem behaviors (spec §43–§46)", () => {
     unlinkSync(path);
     symlinkSync(join(dir, "other.ts"), path);
     writeFileAt(dir, "other.ts", "other\n");
-    const ops = [{ kind: "edit" as const, start: 0, end: 0, lines: ["ONE"], requestIndex: 0 }];
-    const result = applyTransaction(file.doc, { anchors: file.anchors, retired: file.retired }, ops);
+    const ops = [
+      {
+        kind: "edit" as const,
+        start: 0,
+        end: 0,
+        lines: ["ONE"],
+        requestIndex: 0,
+      },
+    ];
+    const result = applyTransaction(
+      file.doc,
+      { anchors: file.anchors, retired: file.retired },
+      ops,
+    );
     const afterRaw = Buffer.from(encodeDocument(result.document), "utf-8");
     await expect(
       commitMutation({
@@ -194,13 +244,51 @@ describe("filesystem behaviors (spec §43–§46)", () => {
         checksumAfter: sha256Hex(afterRaw),
         docAfter: result.document,
         anchorsAfter: result.anchors,
-        fingerprintsAfter: fingerprintHexes(result.document.lines.map((l) => l.text)),
+        fingerprintsAfter: fingerprintHexes(
+          result.document.lines.map((l) => l.text),
+        ),
         retiredAfter: new Set([...file.retired, ...result.retiredAdded]),
         transactionId: newTransactionId(),
         keepUndo: true,
         warnings: [],
       }),
     ).rejects.toThrow(/E_PATH_CHANGED/);
+  });
+
+  it("cleans the journal when target inspection fails", async () => {
+    const dir = makeProject();
+    const first = join(dir, "first.ts");
+    const second = join(dir, "second.ts");
+    symlinkSync(second, first);
+    symlinkSync(first, second);
+    const before = decodeDocument(Buffer.from("one\n", "utf-8"), "first.ts");
+    const after = decodeDocument(Buffer.from("ONE\n", "utf-8"), "first.ts");
+    await expect(
+      commitMutation({
+        realPath: first,
+        label: "first.ts",
+        rawBefore: Buffer.from("one\n", "utf-8"),
+        checksumBefore: sha256Hex(Buffer.from("one\n", "utf-8")),
+        docBefore: before,
+        anchorsBefore: ["A000"],
+        fingerprintsBefore: fingerprintHexes(["one"]),
+        retiredBefore: new Set(),
+        rawAfter: Buffer.from("ONE\n", "utf-8"),
+        checksumAfter: sha256Hex(Buffer.from("ONE\n", "utf-8")),
+        docAfter: after,
+        anchorsAfter: ["B000"],
+        fingerprintsAfter: fingerprintHexes(["ONE"]),
+        retiredAfter: new Set(["A000"]),
+        transactionId: newTransactionId(),
+        keepUndo: true,
+        warnings: [],
+      }),
+    ).rejects.toThrow(/ELOOP|symbolic links/);
+    const store = await loadStore();
+    const pending = store.db
+      .prepare("SELECT COUNT(*) AS n FROM pending_transactions")
+      .get() as { n: number };
+    expect(pending.n).toBe(0);
   });
 });
 
@@ -229,8 +317,21 @@ describe("atomic write internals (spec §44–§45)", () => {
     const tampered = Buffer.from(original);
     tampered[150 * 1024] = 9;
     writeFileSync(p, tampered);
-    await expect(precommitVerify(p, p, original)).rejects.toThrow(/E_FILE_CHANGED/);
+    await expect(precommitVerify(p, p, original)).rejects.toThrow(
+      /E_FILE_CHANGED/,
+    );
     // Equal multi-chunk content passes the chunked compare.
     await expect(precommitVerify(p, p, tampered)).resolves.toBeUndefined();
+  });
+
+  it("reports a disappeared existing target as a file change", async () => {
+    const dir = makeProject();
+    const p = join(dir, "gone.txt");
+    const original = Buffer.from("one\ntwo\n", "utf-8");
+    writeFileSync(p, original);
+    unlinkSync(p);
+    await expect(precommitVerify(p, p, original)).rejects.toThrow(
+      /E_FILE_CHANGED/,
+    );
   });
 });

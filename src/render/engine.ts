@@ -7,7 +7,7 @@
  * - per-line display limit, total byte budget, truncation only between rows,
  *   served only for retained complete rows.
  *
- * Exposes: renderLinesBounded, renderDiff, renderLinesUnserved, renderLines,
+ * Exposes: renderLinesBounded, renderDiff, and renderLinesUnserved,
  * plus shared types and formatters. applyOutputBudget remains internal.
  */
 
@@ -18,7 +18,6 @@ import {
   READ_MAX_OUTPUT_BYTES,
 } from "../constants";
 import { formatSize } from "../utils";
-import { serveLines } from "../served/ledger";
 import type { DiffRow } from "../mutation/apply";
 
 // --- Budget core (from budget.ts) ---
@@ -74,7 +73,8 @@ export function applyOutputBudget(
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i]!;
     const bytes =
-      (candidate.renderedBytes ?? Buffer.byteLength(candidate.rendered, "utf-8")) + 1;
+      (candidate.renderedBytes ??
+        Buffer.byteLength(candidate.rendered, "utf-8")) + 1;
     if (bytes > budget) {
       dropped = candidates.length - i;
       break;
@@ -147,7 +147,10 @@ export function renderDiff(rows: DiffRow[]): RenderedDiff {
   }
   const budgeted = applyOutputBudget(candidates, DIFF_MAX_OUTPUT_BYTES);
   const output = budgeted.truncated
-    ? [...budgeted.rows, `[diff output truncated: ${budgeted.dropped} more row(s) were omitted to stay within the ${formatSize(DIFF_MAX_OUTPUT_BYTES)} output budget. Omitted rows are not authorized for edits; use read to view them.]`]
+    ? [
+        ...budgeted.rows,
+        `[diff output truncated: ${budgeted.dropped} more row(s) were omitted to stay within the ${formatSize(DIFF_MAX_OUTPUT_BYTES)} output budget. Omitted rows are not authorized for edits; use read to view them.]`,
+      ]
     : budgeted.rows;
   const text = output.join("\n");
   return {
@@ -165,7 +168,7 @@ export function formatDisplayRow(anchor: string, text: string): string {
 }
 
 export function omittedRow(lineNumber: number, bytes: number): string {
-  return `[Line ${lineNumber} omitted: ${formatSize(bytes)}. [E_LINE_TOO_LARGE] Use read with an appropriate inspection workflow.]`;
+  return `[Line ${lineNumber} omitted: ${formatSize(bytes)}. [E_LINE_TOO_LARGE] Not authorized for edits; use read with an appropriate inspection workflow.]`;
 }
 
 /**
@@ -200,7 +203,7 @@ export interface BoundedRender {
   /** Rendered text of retained rows. */
   text: string;
   /** Complete exact rows retained — the only rows served. */
-  served: Array<{ anchor: string; exactText: string }>;
+  served: Array<{ anchor: string; exactText: string; lineIndex?: number }>;
   /** 0-based index of the first line NOT rendered (== endLine when none dropped). */
   nextLine: number;
   /** True when the byte budget dropped at least one row. */
@@ -238,29 +241,17 @@ export function renderLinesBounded(
   const budgeted = applyOutputBudget(candidates, maxTotalBytes);
   // Candidates are 1:1 with source lines, and truncation keeps a prefix, so
   // continuation resumes right after the last retained row (PH-OUTPUT-006).
-  const nextLine = budgeted.truncated ? startLine + budgeted.rows.length : endLine;
+  const nextLine = budgeted.truncated
+    ? startLine + budgeted.rows.length
+    : endLine;
   return {
     text: budgeted.rows.join("\n"),
-    served: budgeted.served.map(({ anchor, exactText }) => ({ anchor, exactText })),
+    served: budgeted.served.map(({ anchor, exactText, lineIndex }) => ({
+      anchor,
+      exactText,
+      ...(lineIndex !== undefined ? { lineIndex } : {}),
+    })),
     nextLine,
     truncated: budgeted.truncated,
   };
-}
-
-/**
- * Render document lines 0-based [start, end) as hashline rows, omitting
- * oversized lines. Line numbers in omission notices are absolute and
- * 1-based. Returns the rendered text and the served entries (complete
- * rows only), and serves them.
- */
-export function renderLines(
-  path: string,
-  anchors: readonly string[],
-  texts: readonly string[],
-  startLine: number,
-  endLine: number,
-): { text: string; served: Array<{ anchor: string; exactText: string }> } {
-  const { rows, served } = renderLinesUnserved(anchors, texts, startLine, endLine);
-  serveLines(path, served);
-  return { text: rows.join("\n"), served };
 }

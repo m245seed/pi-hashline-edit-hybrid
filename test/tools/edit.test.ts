@@ -1,6 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { withStateDir } from "../support/env";
-import { makeProject, runTool, textOf, writeFileAt, readFileAt, anchorsFromRead } from "../support/tools";
+import {
+  makeProject,
+  runTool,
+  textOf,
+  writeFileAt,
+  readFileAt,
+  anchorsFromRead,
+} from "../support/tools";
 
 import { resetStoreForTests } from "../../src/state/database";
 import { resetServed } from "../../src/served/ledger";
@@ -11,8 +18,6 @@ import { getLargeEditGuard, setLargeEditGuard } from "../../src/constants";
 
 const editTool = buildEditToolDef();
 const readTool = buildReadToolDef();
-
-;
 
 beforeEach(() => {
   withStateDir();
@@ -26,7 +31,11 @@ afterEach(async () => {
 describe("edit tool end-to-end (spec §13, §70)", () => {
   it("replaces two ranges in one atomic transaction", async () => {
     const dir = makeProject();
-    writeFileAt(dir, "total.ts", "function total(items) {\n  let value = 0;\n  for (const item of items) {\n    value += item.price;\n  }\n  return value;\n}\n");
+    writeFileAt(
+      dir,
+      "total.ts",
+      "function total(items) {\n  let value = 0;\n  for (const item of items) {\n    value += item.price;\n  }\n  return value;\n}\n",
+    );
     const read = await runTool(readTool, { path: "total.ts" }, dir);
     const anchors = anchorsFromRead(textOf(read));
 
@@ -35,8 +44,20 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
       {
         path: "total.ts",
         edits: [
-          { range: [anchors.get("  let value = 0;")!, anchors.get("  let value = 0;")!], lines: ["  let value = 0.0;"] },
-          { range: [anchors.get("  return value;")!, anchors.get("  return value;")!], lines: ["  return Math.round(value * 100) / 100;"] },
+          {
+            range: [
+              anchors.get("  let value = 0;")!,
+              anchors.get("  let value = 0;")!,
+            ],
+            lines: ["  let value = 0.0;"],
+          },
+          {
+            range: [
+              anchors.get("  return value;")!,
+              anchors.get("  return value;")!,
+            ],
+            lines: ["  return Math.round(value * 100) / 100;"],
+          },
         ],
       },
       dir,
@@ -48,7 +69,8 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
     expect(readFileAt(joinPath(dir, "total.ts"))).toBe(
       "function total(items) {\n  let value = 0.0;\n  for (const item of items) {\n    value += item.price;\n  }\n  return Math.round(value * 100) / 100;\n}\n",
     );
-    const metrics = result.details?.metrics as Record<string, unknown> | undefined;
+    const metrics = result.details?.metrics as
+      Record<string, unknown> | undefined;
     expect(metrics?.classification).toBe("applied");
     expect(metrics?.edits_attempted).toBe(2);
     expect(metrics?.edits_applied).toBe(2);
@@ -65,7 +87,24 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
     await runTool(readTool, { path: "a.ts" }, dir);
     const r1 = await runTool(
       editTool,
-      { path: "a.ts", edits: [{ range: [anchorOf(textOf(await runTool(readTool, { path: "a.ts" }, dir)), "two")!, anchorOf(textOf(await runTool(readTool, { path: "a.ts" }, dir)), "two")!], lines: ["TWO", "two.5"] }] },
+      {
+        path: "a.ts",
+        edits: [
+          {
+            range: [
+              anchorOf(
+                textOf(await runTool(readTool, { path: "a.ts" }, dir)),
+                "two",
+              )!,
+              anchorOf(
+                textOf(await runTool(readTool, { path: "a.ts" }, dir)),
+                "two",
+              )!,
+            ],
+            lines: ["TWO", "two.5"],
+          },
+        ],
+      },
       dir,
     );
     expect(r1.isError).toBeFalsy();
@@ -80,11 +119,16 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
     // Follow-up edit using only the anchor from the diff — no re-read.
     const r2 = await runTool(
       editTool,
-      { path: "a.ts", edits: [{ range: [newAnchor!, newAnchor!], lines: ["TWO!!"] }] },
+      {
+        path: "a.ts",
+        edits: [{ range: [newAnchor!, newAnchor!], lines: ["TWO!!"] }],
+      },
       dir,
     );
     expect(r2.isError).toBeFalsy();
-    expect(readFileAt(joinPath(dir, "a.ts"))).toBe("one\nTWO!!\ntwo.5\nthree\n");
+    expect(readFileAt(joinPath(dir, "a.ts"))).toBe(
+      "one\nTWO!!\ntwo.5\nthree\n",
+    );
   });
 
   it("rejects an unserved range with E_ANCHOR_NOT_SERVED and zero mutation", async () => {
@@ -108,7 +152,9 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
         dir,
       ),
     ).rejects.toThrow(/E_ANCHOR_NOT_SERVED/);
-    expect(readFileAt(joinPath(dir, "a.ts"))).toBe("one\ntwo\nthree\nfour\nfive\n");
+    expect(readFileAt(joinPath(dir, "a.ts"))).toBe(
+      "one\ntwo\nthree\nfour\nfive\n",
+    );
   });
 
   it("detects stale served content (E_RANGE_STALE) after external change", async () => {
@@ -127,7 +173,10 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
     await expect(
       runTool(
         editTool,
-        { path: "a.ts", edits: [{ range: [startAnchor, endAnchor], lines: ["X"] }] },
+        {
+          path: "a.ts",
+          edits: [{ range: [startAnchor, endAnchor], lines: ["X"] }],
+        },
         dir,
       ),
     ).rejects.toThrow(/E_RANGE_STALE/);
@@ -135,7 +184,10 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
     // The fresh rows in the error become served, so a retry succeeds.
     const retry = await runTool(
       editTool,
-      { path: "a.ts", edits: [{ range: [startAnchor, endAnchor], lines: ["X"] }] },
+      {
+        path: "a.ts",
+        edits: [{ range: [startAnchor, endAnchor], lines: ["X"] }],
+      },
       dir,
     );
     expect(retry.isError).toBeFalsy();
@@ -190,7 +242,12 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
     await expect(
       runTool(
         editTool,
-        { path: "a.ts", edits: [{ range: [first!, first!], lines: ["Ab31│console.log(\"x\")"] }] },
+        {
+          path: "a.ts",
+          edits: [
+            { range: [first!, first!], lines: ['Ab31│console.log("x")'] },
+          ],
+        },
         dir,
       ),
     ).rejects.toThrow(/E_DISPLAY_LIKE_CONTENT/);
@@ -224,7 +281,15 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
     await expect(
       runTool(
         editTool,
-        { path: "a.ts", edits: [{ range: [anchors.get("two")!, anchors.get("two")!], lines: ["two", "three"] }] },
+        {
+          path: "a.ts",
+          edits: [
+            {
+              range: [anchors.get("two")!, anchors.get("two")!],
+              lines: ["two", "three"],
+            },
+          ],
+        },
         dir,
       ),
     ).rejects.toThrow(/E_BOUNDARY_DUP/);
@@ -245,7 +310,8 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
     );
     expect(result.isError).toBeFalsy();
     expect(textOf(result)).toContain("No changes made.");
-    const metrics = result.details?.metrics as Record<string, unknown> | undefined;
+    const metrics = result.details?.metrics as
+      Record<string, unknown> | undefined;
     expect(metrics?.classification).toBe("noop");
     expect(readFileAt(joinPath(dir, "a.ts"))).toBe(before);
   });
@@ -298,7 +364,11 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
     await expect(
       runTool(
         editTool,
-        { path: "a.ts", edits: [{ range: [first!, first!], lines: ["ONE"] }], expected_revision: revision },
+        {
+          path: "a.ts",
+          edits: [{ range: [first!, first!], lines: ["ONE"] }],
+          expected_revision: revision,
+        },
         dir,
       ),
     ).rejects.toThrow(/E_FILE_REVISION_CHANGED/);
@@ -313,11 +383,21 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
     const anchors = anchorsFromRead(textOf(read));
     const result = await runTool(
       editTool,
-      { path: "a.ts", edits: [{ range: [anchors.get("two")!, anchors.get("two")!], lines: ["TWO", "two.5"] }] },
+      {
+        path: "a.ts",
+        edits: [
+          {
+            range: [anchors.get("two")!, anchors.get("two")!],
+            lines: ["TWO", "two.5"],
+          },
+        ],
+      },
       dir,
     );
     expect(result.isError).toBeFalsy();
-    expect(readFileAt(joinPath(dir, "a.ts"))).toBe("\uFEFFone\r\nTWO\r\ntwo.5\r\nthree\r\n");
+    expect(readFileAt(joinPath(dir, "a.ts"))).toBe(
+      "\uFEFFone\r\nTWO\r\ntwo.5\r\nthree\r\n",
+    );
     const mode = require("fs").statSync(path).mode & 0o777;
     expect(mode).toBe(0o754);
   });
@@ -328,18 +408,34 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
     await runTool(readTool, { path: "a.ts" }, dir);
     const r = await runTool(
       editTool,
-      { path: "a.ts", edits: [{ range: [anchorOf(await readOnce(dir, "a.ts"), "two")!, anchorOf(await readOnce(dir, "a.ts"), "two")!], lines: ["TWO"] }] },
+      {
+        path: "a.ts",
+        edits: [
+          {
+            range: [
+              anchorOf(await readOnce(dir, "a.ts"), "two")!,
+              anchorOf(await readOnce(dir, "a.ts"), "two")!,
+            ],
+            lines: ["TWO"],
+          },
+        ],
+      },
       dir,
     );
     expect(r.isError).toBeFalsy();
     // The unchanged context row for "one" carries an anchor that was served
     // by the diff; editing it directly must succeed.
-    const contextRow = textOf(r).split("\n").find((l) => /^ [A-Za-z0-9]{4}│one$/.test(l));
+    const contextRow = textOf(r)
+      .split("\n")
+      .find((l) => /^ [A-Za-z0-9]{4}│one$/.test(l));
     const contextAnchor = contextRow?.match(/^ ([A-Za-z0-9]{4})│/)?.[1];
     expect(contextAnchor).toBeDefined();
     const r2 = await runTool(
       editTool,
-      { path: "a.ts", edits: [{ range: [contextAnchor!, contextAnchor!], lines: ["ONE"] }] },
+      {
+        path: "a.ts",
+        edits: [{ range: [contextAnchor!, contextAnchor!], lines: ["ONE"] }],
+      },
       dir,
     );
     expect(r2.isError).toBeFalsy();
@@ -373,7 +469,11 @@ describe("edit tool option warnings", () => {
     const one = anchors.get("one")!;
     const result = await runTool(
       editTool,
-      { path: "a.ts", edits: [{ range: [one, one], lines: ["ONE"] }], final_newline: "absent" },
+      {
+        path: "a.ts",
+        edits: [{ range: [one, one], lines: ["ONE"] }],
+        final_newline: "absent",
+      },
       dir,
     );
     expect(result.isError).toBeFalsy();
@@ -389,7 +489,11 @@ describe("edit tool option warnings", () => {
     const two = anchors.get("two")!;
     const result = await runTool(
       editTool,
-      { path: "a.ts", edits: [{ range: [two, two], lines: ["TWO"] }], final_newline: "absent" },
+      {
+        path: "a.ts",
+        edits: [{ range: [two, two], lines: ["TWO"] }],
+        final_newline: "absent",
+      },
       dir,
     );
     expect(result.isError).toBeFalsy();
@@ -406,5 +510,11 @@ describe("large edit guard configuration", () => {
     expect(getLargeEditGuard().minRemovedLines).toBe(30);
     setLargeEditGuard({ minRemovedLines: 20 });
     expect(getLargeEditGuard().minRemovedLines).toBe(20);
+    expect(() => setLargeEditGuard({ minRemovedLines: 0 })).toThrow(
+      /E_BAD_SHAPE/,
+    );
+    expect(() => setLargeEditGuard({ removedRatio: Number.NaN })).toThrow(
+      /E_BAD_SHAPE/,
+    );
   });
 });

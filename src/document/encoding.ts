@@ -34,7 +34,12 @@ export function detectBom(raw: Uint8Array): UtfBom | undefined {
   }
   if (raw.length >= 2 && raw[0] === 0xff && raw[1] === 0xfe) return "utf16le";
   if (raw.length >= 2 && raw[0] === 0xfe && raw[1] === 0xff) return "utf16be";
-  if (raw.length >= 3 && raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf) {
+  if (
+    raw.length >= 3 &&
+    raw[0] === 0xef &&
+    raw[1] === 0xbb &&
+    raw[2] === 0xbf
+  ) {
     return "utf8";
   }
   return undefined;
@@ -72,8 +77,18 @@ export function decodeText(
   raw: Uint8Array,
   pathLabel: string,
 ): { bom: string; text: string } {
+  if (raw.byteLength > MAX_BYTES) {
+    throw new Error(
+      `[E_FILE_TOO_LARGE] ${pathLabel} is ${formatSize(raw.byteLength)}, exceeding the ${formatSize(MAX_BYTES)} edit limit.`,
+    );
+  }
   const bom = detectBom(raw);
-  if (bom === "utf16le" || bom === "utf16be" || bom === "utf32le" || bom === "utf32be") {
+  if (
+    bom === "utf16le" ||
+    bom === "utf16be" ||
+    bom === "utf32le" ||
+    bom === "utf32be"
+  ) {
     throw new Error(
       `[E_ENCODING_UNSUPPORTED] ${pathLabel} is ${bom === "utf16le" ? "UTF-16LE" : bom === "utf16be" ? "UTF-16BE" : bom === "utf32le" ? "UTF-32LE" : "UTF-32BE"} encoded. The hybrid editor only supports UTF-8 (with or without BOM).`,
     );

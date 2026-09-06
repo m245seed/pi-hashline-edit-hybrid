@@ -98,6 +98,9 @@ export function assertPath(path: unknown): string {
   if (typeof path !== "string" || path.length === 0) {
     throw new Error('[E_BAD_SHAPE] A non-empty "path" string is required.');
   }
+  if (path.includes("\0")) {
+    throw new Error('[E_BAD_SHAPE] "path" must not contain a NUL byte.');
+  }
   return path;
 }
 
@@ -107,7 +110,9 @@ export function assertLines(
   suspiciousCheck: (line: string) => void,
 ): string[] {
   if (!Array.isArray(lines)) {
-    throw new Error(`[E_BAD_SHAPE] ${label} "lines" must be an array of literal logical lines.`);
+    throw new Error(
+      `[E_BAD_SHAPE] ${label} "lines" must be an array of literal logical lines.`,
+    );
   }
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
@@ -165,7 +170,10 @@ function assertFinalNewline(value: unknown): FinalNewline | undefined {
   );
 }
 
-function assertOptionalBoolean(value: unknown, field: string): boolean | undefined {
+function assertOptionalBoolean(
+  value: unknown,
+  field: string,
+): boolean | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "boolean") {
     throw new Error(`[E_BAD_SHAPE] "${field}" must be a boolean.`);
@@ -189,11 +197,22 @@ export function validateEditRequest(request: unknown): EditRequest {
   rejectUnknownFields(request, EDIT_ROOT_KEYS, "Edit request");
   const path = assertPath(request.path);
   if (!Array.isArray(request.edits) || request.edits.length === 0) {
-    throw new Error('[E_BAD_SHAPE] Edit request requires a non-empty "edits" array.');
+    throw new Error(
+      '[E_BAD_SHAPE] Edit request requires a non-empty "edits" array.',
+    );
   }
-  const allowDisplayLike = assertOptionalBoolean(request.allow_display_like_content, "allow_display_like_content");
-  const allowBoundaryDuplicate = assertOptionalBoolean(request.allow_boundary_duplicate, "allow_boundary_duplicate");
-  const allowLargeChange = assertOptionalBoolean(request.allow_large_change, "allow_large_change");
+  const allowDisplayLike = assertOptionalBoolean(
+    request.allow_display_like_content,
+    "allow_display_like_content",
+  );
+  const allowBoundaryDuplicate = assertOptionalBoolean(
+    request.allow_boundary_duplicate,
+    "allow_boundary_duplicate",
+  );
+  const allowLargeChange = assertOptionalBoolean(
+    request.allow_large_change,
+    "allow_large_change",
+  );
   const edits: EditItem[] = [];
   for (let i = 0; i < request.edits.length; i++) {
     const item = request.edits[i];
@@ -236,9 +255,14 @@ export function validateInsertRequest(request: unknown): InsertRequest {
   rejectUnknownFields(request, INSERT_ROOT_KEYS, "Insert request");
   const path = assertPath(request.path);
   if (!Array.isArray(request.inserts) || request.inserts.length === 0) {
-    throw new Error('[E_BAD_SHAPE] Insert request requires a non-empty "inserts" array.');
+    throw new Error(
+      '[E_BAD_SHAPE] Insert request requires a non-empty "inserts" array.',
+    );
   }
-  const allowDisplayLike = assertOptionalBoolean(request.allow_display_like_content, "allow_display_like_content");
+  const allowDisplayLike = assertOptionalBoolean(
+    request.allow_display_like_content,
+    "allow_display_like_content",
+  );
   const inserts: InsertItem[] = [];
   for (let i = 0; i < request.inserts.length; i++) {
     const item = request.inserts[i];
@@ -253,7 +277,9 @@ export function validateInsertRequest(request: unknown): InsertRequest {
       );
     }
     if (item.lines === undefined) {
-      throw new Error(`[E_BAD_SHAPE] Insert #${i + 1} requires a "lines" array.`);
+      throw new Error(
+        `[E_BAD_SHAPE] Insert #${i + 1} requires a "lines" array.`,
+      );
     }
     const lines = assertLines(item.lines, `Insert #${i + 1}`, (line) =>
       suspiciousContentCheck(line, allowDisplayLike === true),
@@ -278,8 +304,14 @@ export function validateWriteRequest(request: unknown): WriteRequest {
   if (typeof request.content !== "string") {
     throw new Error('[E_BAD_SHAPE] A "content" string is required.');
   }
-  const replaceExisting = assertOptionalBoolean(request.replace_existing, "replace_existing");
-  const allowDisplayLike = assertOptionalBoolean(request.allow_display_like_content, "allow_display_like_content");
+  const replaceExisting = assertOptionalBoolean(
+    request.replace_existing,
+    "replace_existing",
+  );
+  const allowDisplayLike = assertOptionalBoolean(
+    request.allow_display_like_content,
+    "allow_display_like_content",
+  );
   const expectedRevision = assertExpectedRevision(request.expected_revision);
   return {
     path,

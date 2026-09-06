@@ -9,33 +9,46 @@
  * the anchor is an address, not a security hash.
  */
 
-import { ANCHOR_SPACE, ANCHOR_PROBE_STRIDE, anchorToIdx, idxToAnchor } from "./alphabet";
+import {
+  ANCHOR_RE,
+  ANCHOR_SPACE,
+  ANCHOR_PROBE_STRIDE,
+  anchorToIdx,
+  idxToAnchor,
+} from "./alphabet";
 import { hashLine32 } from "./hasher";
 
 export class AnchorAllocator {
   private readonly active: Set<number>;
   private readonly retired: Set<number>;
+  private readonly nextProbe = new Map<number, number>();
 
   constructor(active: ReadonlySet<string>, retired: ReadonlySet<string>) {
     this.active = new Set<number>();
     for (const a of active) {
+      if (!ANCHOR_RE.test(a)) throw new Error("Invalid active anchor state");
       const idx = anchorToIdx(a);
-      if (idx >= 0) this.active.add(idx);
+      this.active.add(idx);
     }
     this.retired = new Set<number>();
     for (const a of retired) {
+      if (!ANCHOR_RE.test(a)) throw new Error("Invalid retired anchor state");
       const idx = anchorToIdx(a);
-      if (idx >= 0) this.retired.add(idx);
+      this.retired.add(idx);
     }
   }
 
   /** Deterministic allocation for a line's exact text. */
   allocate(text: string): string {
     const base = hashLine32(text) % ANCHOR_SPACE;
-    let idx = base;
+    // Candidates are never freed during one allocation pass. Remembering the
+    // next candidate for each hash base therefore preserves the original
+    // probe order while making repeated identical lines amortized O(1).
+    let idx = this.nextProbe.get(base) ?? base;
     for (let probes = 0; probes < ANCHOR_SPACE; probes++) {
       if (!this.active.has(idx) && !this.retired.has(idx)) {
         this.active.add(idx);
+        this.nextProbe.set(base, (idx + ANCHOR_PROBE_STRIDE) % ANCHOR_SPACE);
         return idxToAnchor(idx);
       }
       idx = (idx + ANCHOR_PROBE_STRIDE) % ANCHOR_SPACE;

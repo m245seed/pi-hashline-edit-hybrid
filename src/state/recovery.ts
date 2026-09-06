@@ -12,19 +12,19 @@
  *   read, drop transaction-specific undo, and log a divergence warning.
  */
 
-import { readFile, stat } from "fs/promises";
+import { lstat, readFile } from "fs/promises";
 import { sha256Hex } from "../utils";
 import { withTransaction } from "./database";
 import {
-  putSnapshot,
+  putSnapshotInTransaction,
   upsertUndoRow,
-  deleteSnapshot,
+  deleteSnapshotInTransaction,
   type FileSnapshot,
   type UndoPayload,
 } from "./snapshots";
-import { deleteUndoRecord } from "./undo";
+import { deleteUndoRecordInTransaction } from "./undo";
 import {
-  deletePendingTransaction,
+  deletePendingTransactionInTransaction,
   listPendingTransactions,
 } from "./transaction-journal";
 
@@ -36,28 +36,43 @@ export interface RecoverySummary {
 }
 
 export async function runRecovery(): Promise<RecoverySummary> {
-  const summary: RecoverySummary = { discarded: 0, promoted: 0, diverged: 0, warnings: [] };
+  const summary: RecoverySummary = {
+    discarded: 0,
+    promoted: 0,
+    diverged: 0,
+    warnings: [],
+  };
   const pending = listPendingTransactions();
   if (pending.length === 0) return summary;
 
   for (const entry of pending) {
     let raw: Buffer;
     try {
-      const info = await stat(entry.path);
-      if (!info.isFile()) throw new Error("not a file");
+      const info = await lstat(entry.path);
+      if (!info.isFile()) {
+        const error = new Error("not a regular file") as NodeJS.ErrnoException;
+        error.code = "ENOTFILE";
+        throw error;
+      }
       raw = await readFile(entry.path);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") {
-        // File deleted mid-transaction: external action. Do not guess.
+      if (
+        code === "ENOENT" ||
+        code === "ENOTFILE" ||
+        code === "EISDIR" ||
+        code === "ENOTDIR"
+      ) {
+        // File deleted or replaced by a non-file mid-transaction: external
+        // action. Do not guess.
         withTransaction(() => {
-          deletePendingTransaction(entry.transactionId);
-          deleteUndoRecord(entry.path);
-          deleteSnapshot(entry.path);
+          deletePendingTransactionInTransaction(entry.transactionId);
+          deleteUndoRecordInTransaction(entry.path);
+          deleteSnapshotInTransaction(entry.path);
         });
         summary.diverged++;
         summary.warnings.push(
-          `[W_STATE_RECOVERED] Pending transaction ${entry.transactionId} for ${entry.path} was discarded because the file no longer exists; anchors were invalidated.`,
+          `[W_STATE_RECOVERED] Pending transaction ${entry.transactionId} for ${entry.path} was discarded because the target was deleted or is no longer a regular file; anchors were invalidated.`,
         );
         continue;
       }
@@ -74,7 +89,7 @@ export async function runRecovery(): Promise<RecoverySummary> {
       // Commit never happened. The stored before-state is already the
       // authoritative snapshot; drop the pending post-state.
       withTransaction(() => {
-        deletePendingTransaction(entry.transactionId);
+        deletePendingTransactionInTransaction(entry.transactionId);
       });
       summary.discarded++;
       continue;
@@ -92,7 +107,7 @@ export async function runRecovery(): Promise<RecoverySummary> {
           retired: entry.after.retired,
           updatedAt: Date.now(),
         };
-        putSnapshot(entry.path, snapshot);
+        putSnapshotInTransaction(snapshot);
         if (entry.undo) {
           const payload: UndoPayload = {
             path: entry.path,
@@ -108,9 +123,9 @@ export async function runRecovery(): Promise<RecoverySummary> {
           };
           upsertUndoRow(payload);
         } else {
-          deleteUndoRecord(entry.path);
+          deleteUndoRecordInTransaction(entry.path);
         }
-        deletePendingTransaction(entry.transactionId);
+        deletePendingTransactionInTransaction(entry.transactionId);
       });
       summary.promoted++;
       summary.warnings.push(
@@ -122,9 +137,9 @@ export async function runRecovery(): Promise<RecoverySummary> {
     // External modification: do not guess. Discard transaction state;
     // anchors will be reconciled from the actual file on the next read.
     withTransaction(() => {
-      deletePendingTransaction(entry.transactionId);
-      deleteUndoRecord(entry.path);
-      deleteSnapshot(entry.path);
+      deletePendingTransactionInTransaction(entry.transactionId);
+      deleteUndoRecordInTransaction(entry.path);
+      deleteSnapshotInTransaction(entry.path);
     });
     summary.diverged++;
     summary.warnings.push(

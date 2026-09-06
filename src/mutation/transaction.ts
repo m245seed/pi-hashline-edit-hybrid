@@ -13,9 +13,16 @@
 import { readFile } from "fs/promises";
 import { ANCHOR_SPACE } from "../anchors/alphabet";
 import { ANCHOR_SPACE_PRESSURE_RATIO } from "../constants";
+import { MAX_BYTES, MAX_LINES } from "../constants";
 import { fingerprintHexes } from "../anchors/fingerprints";
 import { reconcileState } from "../anchors/reconcile";
-import { decodeDocument, encodeDocument, assertFileKind, assertLineCount, checkFileKind } from "../document/encoding";
+import {
+  decodeDocument,
+  encodeDocument,
+  assertFileKind,
+  assertLineCount,
+  checkFileKind,
+} from "../document/encoding";
 import { hasMixedLineEndings, type Document } from "../document/lines";
 import { reconcileServed } from "../served/ledger";
 import { cachedPrepare, loadStore, withBusyRetry } from "../state/database";
@@ -26,7 +33,10 @@ import {
   type FileSnapshot,
   type UndoPayload,
 } from "../state/snapshots";
-import { insertPendingTransaction, type PendingState } from "../state/transaction-journal";
+import {
+  insertPendingTransaction,
+  type PendingState,
+} from "../state/transaction-journal";
 import {
   inspectTarget,
   prepareTempWrite,
@@ -168,6 +178,19 @@ export interface CommitInput {
   expectAbsent?: boolean;
 }
 
+function assertMutationResultLimits(input: CommitInput): void {
+  if (input.rawAfter.byteLength > MAX_BYTES) {
+    throw new Error(
+      `[E_FILE_TOO_LARGE] The requested result for ${input.label} is ${input.rawAfter.byteLength} bytes, exceeding the ${MAX_BYTES} byte edit limit. Nothing was modified.`,
+    );
+  }
+  if (input.docAfter.lines.length > MAX_LINES) {
+    throw new Error(
+      `[E_FILE_TOO_LARGE] The requested result for ${input.label} has ${input.docAfter.lines.length} lines, exceeding the ${MAX_LINES}-line edit limit. Nothing was modified.`,
+    );
+  }
+}
+
 /**
  * Commit one mutation with the full protocol (spec §29). Throws before
  * committing on any validation failure; after the rename, finalization
@@ -198,6 +221,7 @@ export async function commitMutation(input: CommitInput): Promise<void> {
     expectAbsent,
   } = input;
 
+  assertMutationResultLimits(input);
   if (expectedRevision !== undefined && expectedRevision !== checksumBefore) {
     throw new Error(
       `[E_FILE_REVISION_CHANGED] The current file revision does not match expected_revision. Nothing was modified.`,
@@ -251,15 +275,23 @@ export async function commitMutation(input: CommitInput): Promise<void> {
     createdAt: Date.now(),
   });
 
-  const target = await inspectTarget(realPath);
+  let target: Awaited<ReturnType<typeof inspectTarget>>;
   let tempPath: string | undefined;
   let fileCommitted = false;
+  let hardlinkWriteAttempted = false;
   try {
+    target = await inspectTarget(realPath);
     // Phases 4–5.
     if (target.hardlink) {
-      await precommitVerify(realPath, realPath, rawBefore, expectAbsent === true);
+      await precommitVerify(
+        realPath,
+        realPath,
+        rawBefore,
+        expectAbsent === true,
+      );
       abortCheck(signal);
-      await writeInPlace(target.targetPath, rawAfter, target.mode);
+      hardlinkWriteAttempted = true;
+      await writeInPlace(target.targetPath, rawAfter, target.mode, false);
       fileCommitted = true;
       warnings.push(
         `[W_HARDLINK_NONATOMIC] ${label} has multiple hard links. The edit preserved the shared inode, so the write could not use atomic rename semantics.`,
@@ -271,7 +303,12 @@ export async function commitMutation(input: CommitInput): Promise<void> {
           rawAfter,
           target.mode ?? (expectAbsent ? 0o644 : undefined),
         );
-        await precommitVerify(realPath, realPath, rawBefore, expectAbsent === true);
+        await precommitVerify(
+          realPath,
+          realPath,
+          rawBefore,
+          expectAbsent === true,
+        );
         abortCheck(signal);
         // Phase 6 — commit.
         await commitTempFile(tempPath, target.targetPath);
@@ -282,7 +319,12 @@ export async function commitMutation(input: CommitInput): Promise<void> {
         // else from the atomic-replacement phase is an unexpected safe-
         // replacement failure (spec §45) — never a silent non-atomic
         // fallback.
-        if (error instanceof Error && /E_(FILE_CHANGED|PATH_CHANGED|ABORTED|FILE_TOO_LARGE)/.test(error.message)) {
+        if (
+          error instanceof Error &&
+          /E_(FILE_CHANGED|PATH_CHANGED|ABORTED|FILE_TOO_LARGE)/.test(
+            error.message,
+          )
+        ) {
           throw error;
         }
         throw new Error(
@@ -307,15 +349,23 @@ export async function commitMutation(input: CommitInput): Promise<void> {
       pendingTransactionId: transactionId,
     });
   } catch (error: unknown) {
+    if (
+      hardlinkWriteAttempted &&
+      !(error instanceof Error && /E_FILE_CHANGED/.test(error.message))
+    ) {
+      // A failed open proves no bytes were written; other failures may have
+      // happened after truncate/write began, so recovery must retain the row.
+      fileCommitted = true;
+    }
     if (tempPath) {
       await removeTempFile(tempPath);
     }
     if (!fileCommitted) {
       try {
         withBusyRetry(() =>
-          cachedPrepare(`DELETE FROM pending_transactions WHERE transaction_id = ?`).run(
-            transactionId,
-          ),
+          cachedPrepare(
+            `DELETE FROM pending_transactions WHERE transaction_id = ?`,
+          ).run(transactionId),
         );
       } catch {}
       throw error;
@@ -329,7 +379,7 @@ export async function commitMutation(input: CommitInput): Promise<void> {
 }
 
 function abortCheck(signal?: AbortSignal): void {
-  if (signal?.aborted) throw new Error("[E_ABORTED] Operation cancelled before commit.");
+  if (signal?.aborted) throw new Error("[E_ABORTED] Operation aborted.");
 }
 
 /** Anchor-space pressure warning (spec §52). */

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { withStateDir } from "../support/env";
 
 import { resetStoreForTests, loadStore } from "../../src/state/database";
@@ -21,9 +21,12 @@ import {
   newTransactionId,
   type PendingTransaction,
 } from "../../src/state/transaction-journal";
-import { getUndoRecord, deleteUndoRecord, loadUndoRecord, clearUndoRecord } from "../../src/state/undo";
-
-;
+import {
+  getUndoRecord,
+  deleteUndoRecord,
+  loadUndoRecord,
+  clearUndoRecord,
+} from "../../src/state/undo";
 
 beforeEach(() => {
   withStateDir();
@@ -48,13 +51,22 @@ function snapshot(path: string, texts: string[]): FileSnapshot {
 describe("blob codecs (spec §65)", () => {
   it("round-trips anchors", () => {
     const anchors = ["A000", "B001", "C002", "zZz9"];
-    expect(decodeAnchorsBlob(encodeAnchorsBlob(anchors), anchors.length)).toEqual(anchors);
+    expect(
+      decodeAnchorsBlob(encodeAnchorsBlob(anchors), anchors.length),
+    ).toEqual(anchors);
   });
 
   it("rejects corrupt anchor blobs", () => {
     expect(() => decodeAnchorsBlob(Buffer.from("A000B001"), 2)).not.toThrow();
-    expect(() => decodeAnchorsBlob(Buffer.from("A000B00"), 2)).toThrow(/Corrupt/);
-    expect(() => decodeAnchorsBlob(Buffer.from("A000!001"), 2)).toThrow(/Corrupt/);
+    expect(() => decodeAnchorsBlob(Buffer.from("A000B00"), 2)).toThrow(
+      /Corrupt/,
+    );
+    expect(() => decodeAnchorsBlob(Buffer.from("A000!001"), 2)).toThrow(
+      /Corrupt/,
+    );
+    expect(() => decodeAnchorsBlob(Buffer.from("A000A000"), 2)).toThrow(
+      /duplicate/,
+    );
   });
 
   it("round-trips fingerprints", () => {
@@ -63,17 +75,31 @@ describe("blob codecs (spec §65)", () => {
   });
 
   it("rejects corrupt fingerprint blobs", () => {
-    expect(() => decodeFingerprintsBlob(Buffer.alloc(10), 1)).toThrow(/Corrupt/);
+    expect(() => decodeFingerprintsBlob(Buffer.alloc(10), 1)).toThrow(
+      /Corrupt/,
+    );
+    expect(() => encodeFingerprintsBlob(["x".repeat(64)])).toThrow(
+      /invalid fingerprint/,
+    );
+    expect(() => decodeFingerprintsBlob(Buffer.alloc(32), 0.5)).toThrow(
+      /Corrupt/,
+    );
   });
 
   it("round-trips retired sets", () => {
     const retired = new Set(["Z000", "A999", "B001"]);
-    expect(decodeRetiredBlob(encodeRetiredBlob(retired))).toEqual(new Set(["Z000", "A999", "B001"]));
+    expect(decodeRetiredBlob(encodeRetiredBlob(retired))).toEqual(
+      new Set(["Z000", "A999", "B001"]),
+    );
     expect(decodeRetiredBlob(Buffer.alloc(0))).toEqual(new Set());
   });
 
   it("rejects corrupt retired blobs", () => {
     expect(() => decodeRetiredBlob(Buffer.alloc(4))).toThrow(/Corrupt/);
+    expect(() => decodeRetiredBlob(Buffer.alloc(6))).toThrow(/duplicate/);
+    expect(() => decodeRetiredBlob(Buffer.from([0xff, 0xff, 0xff]))).toThrow(
+      /out of range/,
+    );
   });
 });
 
@@ -174,13 +200,23 @@ describe("finalizeTransaction", () => {
       path: "/p/a.ts",
       beforeChecksum: "b".repeat(64),
       afterChecksum: snap.rawChecksum,
-      before: { anchors: ["A000"], fingerprints: ["x".repeat(64)], retired: new Set(), lineCount: 1 },
-      after: { anchors: snap.anchors, fingerprints: snap.fingerprints, retired: snap.retired, lineCount: 3 },
+      before: {
+        anchors: ["A000"],
+        fingerprints: ["f0".repeat(32)],
+        retired: new Set(),
+        lineCount: 1,
+      },
+      after: {
+        anchors: snap.anchors,
+        fingerprints: snap.fingerprints,
+        retired: snap.retired,
+        lineCount: 3,
+      },
       undo: {
         beforeBytes: Buffer.from("one\n", "utf-8"),
         afterChecksum: snap.rawChecksum,
         beforeAnchors: ["A000"],
-        beforeFingerprints: ["x".repeat(64)],
+        beforeFingerprints: ["f0".repeat(32)],
         beforeRetired: new Set(),
       },
       createdAt: 1,
@@ -194,7 +230,7 @@ describe("finalizeTransaction", () => {
         beforeBytes: Buffer.from("one\n", "utf-8"),
         afterChecksum: snap.rawChecksum,
         beforeAnchors: ["A000"],
-        beforeFingerprints: ["x".repeat(64)],
+        beforeFingerprints: ["f0".repeat(32)],
         beforeRetired: new Set(),
         afterAnchors: snap.anchors,
         afterFingerprints: snap.fingerprints,

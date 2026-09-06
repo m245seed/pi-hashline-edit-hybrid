@@ -18,7 +18,7 @@ export function rejectUnknownFields(
 }
 
 export function abortIf(signal?: AbortSignal): void {
-  if (signal?.aborted) throw new Error("Operation aborted");
+  if (signal?.aborted) throw new Error("[E_ABORTED] Operation aborted.");
 }
 
 export function errCode(error: unknown): string | undefined {
@@ -43,10 +43,16 @@ export function debugLog(message: string, ...args: unknown[]): void {
   }
 }
 
-export function normPosInt(value: unknown, name: string, label = "Read request"): number | undefined {
+export function normPosInt(
+  value: unknown,
+  name: string,
+  label = "Read request",
+): number | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw new Error(`[E_BAD_SHAPE] ${label} field "${name}" must be a positive integer.`);
+    throw new Error(
+      `[E_BAD_SHAPE] ${label} field "${name}" must be a positive integer.`,
+    );
   }
   return value;
 }

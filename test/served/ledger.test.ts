@@ -35,7 +35,13 @@ describe("served ledger (spec §8, §9, §37)", () => {
   it("prunes only non-matching entries after a write", () => {
     serveLine("/p/f.ts", "Ab12", "same");
     serveLine("/p/f.ts", "Cd34", "old");
-    pruneServedPath("/p/f.ts", new Map([["Ab12", "same"], ["Ef56", "new"]]));
+    pruneServedPath(
+      "/p/f.ts",
+      new Map([
+        ["Ab12", "same"],
+        ["Ef56", "new"],
+      ]),
+    );
     expect(servedText("/p/f.ts", "Ab12")).toBe("same");
     expect(servedText("/p/f.ts", "Cd34")).toBeUndefined();
   });
@@ -74,13 +80,7 @@ describe("served ledger (spec §8, §9, §37)", () => {
 
   it("transfers authorization when a line keeps its text under a new anchor", () => {
     serveLine("/p/f.ts", "A000", "same");
-    reconcileServed(
-      "/p/f.ts",
-      ["A000"],
-      new Map([[0, 0]]),
-      ["B222"],
-      ["same"],
-    );
+    reconcileServed("/p/f.ts", ["A000"], new Map([[0, 0]]), ["B222"], ["same"]);
     expect(servedText("/p/f.ts", "B222")).toBe("same");
   });
 });
@@ -102,7 +102,10 @@ describe("served window caps (plan § Memory Management)", () => {
   it("reports rows from the same call that overflow the per-file window", () => {
     const entries = [];
     for (let i = 0; i < 5010; i++) {
-      entries.push({ anchor: `B${String(i).padStart(4, "0")}`, exactText: `x${i}` });
+      entries.push({
+        anchor: `B${String(i).padStart(4, "0")}`,
+        exactText: `x${i}`,
+      });
     }
     const evicted = serveLines("/p/huge.ts", entries);
     expect(evicted).toBe(10);
@@ -116,11 +119,18 @@ describe("served window caps (plan § Memory Management)", () => {
     for (let f = 0; f < 4; f++) {
       for (let i = 0; i < 5000; i++) serveLine(`/p/f${f}.ts`, `A${i}`, `t${i}`);
     }
+    // Refresh every entry in f0 after the other files were populated. A
+    // global LRU must evict f1's oldest entry, not f0's merely because f0 was
+    // inserted first.
+    for (let i = 0; i < 5000; i++) serveLine("/p/f0.ts", `A${i}`, `t${i}`);
     // Total is exactly 20000; one more entry pushes it over globally and
-    // the oldest entries (f0's) are evicted across files.
-    const evicted = serveLines("/p/f4.ts", [{ anchor: "N001", exactText: "new" }]);
+    // the oldest entry (f1's A0) is evicted across files.
+    const evicted = serveLines("/p/f4.ts", [
+      { anchor: "N001", exactText: "new" },
+    ]);
     expect(evicted).toBe(0);
-    expect(servedText("/p/f0.ts", "A0")).toBeUndefined();
+    expect(servedText("/p/f0.ts", "A0")).toBe("t0");
+    expect(servedText("/p/f1.ts", "A0")).toBeUndefined();
     expect(servedText("/p/f0.ts", "A4999")).toBe("t4999");
     expect(servedText("/p/f4.ts", "N001")).toBe("new");
   });
@@ -146,5 +156,26 @@ describe("served window caps (plan § Memory Management)", () => {
       ["start", "MIDDLE", "end"],
     );
     expect(isStale("/p/f.ts", "B111")).toBe(true);
+  });
+
+  it("snapshots served entries before transfers can evict sources", () => {
+    const path = "/p/reconcile.ts";
+    const oldAnchors: string[] = [];
+    for (let i = 0; i < 5000; i++) {
+      const anchor = `A${i}`;
+      oldAnchors.push(anchor);
+      serveLine(path, anchor, `t${i}`);
+    }
+    reconcileServed(
+      path,
+      oldAnchors,
+      new Map([
+        [0, 4999],
+        [1, 0],
+      ]),
+      ["B000", "B001"],
+      ["t4999", "t0"],
+    );
+    expect(servedText(path, "B001")).toBe("t0");
   });
 });

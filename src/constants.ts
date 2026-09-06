@@ -39,10 +39,21 @@ export function getLargeEditGuard(): LargeEditGuardConfig {
 }
 
 export function setLargeEditGuard(config: Partial<LargeEditGuardConfig>): void {
-  activeLargeEditGuard = Object.freeze({
+  const next = {
     ...activeLargeEditGuard,
     ...config,
-  });
+  };
+  if (!Number.isInteger(next.minRemovedLines) || next.minRemovedLines < 1) {
+    throw new Error(
+      '[E_BAD_SHAPE] "minRemovedLines" must be a positive integer.',
+    );
+  }
+  if (!Number.isFinite(next.removedRatio) || next.removedRatio < 0) {
+    throw new Error(
+      '[E_BAD_SHAPE] "removedRatio" must be a finite non-negative number.',
+    );
+  }
+  activeLargeEditGuard = Object.freeze(next);
 }
 
 /** Persistent store tuning (spec §49). */

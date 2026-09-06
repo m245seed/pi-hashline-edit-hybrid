@@ -7,8 +7,9 @@
  * E_RANGE_REVERSED and are never swapped automatically (spec §16).
  */
 
-import { MAX_FEEDBACK_LINES } from "../constants";
-import { renderLines } from "../render/engine";
+import { MAX_FEEDBACK_LINES, READ_MAX_OUTPUT_BYTES } from "../constants";
+import { renderLinesBounded } from "../render/engine";
+import { serveLines } from "../served/ledger";
 
 /**
  * E_ANCHOR_STALE feedback: serve a bounded fresh anchored view so the
@@ -32,9 +33,21 @@ export function staleAnchorMessage(
     start = 0;
   }
   const shown = Math.min(MAX_FEEDBACK_LINES, total - start);
-  const { text } = renderLines(path, anchors, texts, start, start + shown);
+  const bounded = renderLinesBounded(
+    anchors,
+    texts,
+    start,
+    start + shown,
+    READ_MAX_OUTPUT_BYTES,
+  );
+  serveLines(path, bounded.served);
+  let text = bounded.text;
+  if (bounded.truncated) {
+    text += `\n\n[Feedback truncated at the ${READ_MAX_OUTPUT_BYTES / 1024}KB budget. Use read with offset=${bounded.nextLine + 1} to continue.]`;
+  }
   const location = ` in ${path}`;
-  const hint = around !== undefined ? "" : "\n\nUse read() to get fresh anchors.";
+  const hint =
+    around !== undefined ? "" : "\n\nUse read() to get fresh anchors.";
   return `[E_ANCHOR_STALE] Anchor "${anchor}" is no longer current${location}: the file content changed since that anchor was read. Nothing was modified.${hint}\n\nCurrent context with fresh anchors:\n${text}`;
 }
 

@@ -11,13 +11,7 @@
  */
 
 import { randomUUID } from "crypto";
-import {
-  open,
-  readdir,
-  rename,
-  rm,
-  stat,
-} from "fs/promises";
+import { lstat, open, readdir, rename, rm, stat } from "fs/promises";
 import { dirname, join } from "path";
 import { MAX_BYTES, STALE_TEMP_MS } from "../constants";
 import { errCode } from "../utils";
@@ -111,7 +105,9 @@ export async function prepareTempWrite(
     }
     await handle.sync();
   } catch (error: unknown) {
-    await handle.close();
+    try {
+      await handle.close();
+    } catch {}
     try {
       await rm(tempPath, { force: true });
     } catch {}
@@ -158,6 +154,11 @@ export async function precommitVerify(
       // New-file write: the target must still be absent at commit time.
       return;
     }
+    if (errCode(error) === "ENOENT") {
+      throw new Error(
+        `[E_FILE_CHANGED] The file ${path} disappeared during transaction preparation. Nothing was modified.`,
+      );
+    }
     throw error;
   }
   if (expectAbsent) {
@@ -188,13 +189,35 @@ export async function precommitVerify(
       while (offset < info.size) {
         const toRead = Math.min(CHUNK, info.size - offset);
         const { bytesRead } = await handle.read(buf, 0, toRead, offset);
-        if (bytesRead !== toRead || !rawBefore.subarray(offset, offset + toRead).equals(buf.subarray(0, toRead))) {
+        if (
+          bytesRead !== toRead ||
+          !rawBefore
+            .subarray(offset, offset + toRead)
+            .equals(buf.subarray(0, toRead))
+        ) {
           matches = false;
           break;
         }
         offset += toRead;
       }
       equal = matches;
+    }
+    // The file may have grown after the initial stat while it was being
+    // compared. A final size check prevents accepting an appended write.
+    const finalInfo = await handle.stat();
+    if (finalInfo.size !== info.size) equal = false;
+    try {
+      const pathInfo = await lstat(currentTarget);
+      if (
+        !pathInfo.isFile() ||
+        pathInfo.dev !== info.dev ||
+        pathInfo.ino !== info.ino ||
+        pathInfo.size !== info.size
+      ) {
+        equal = false;
+      }
+    } catch {
+      equal = false;
     }
   } finally {
     await handle.close();
@@ -216,14 +239,32 @@ export async function writeInPlace(
   targetPath: string,
   content: Uint8Array,
   mode?: number,
+  createIfMissing = true,
 ): Promise<void> {
-  // Use r+ to avoid O_TRUNC before write; create if missing by falling back to w
+  // Use r+ to avoid O_TRUNC before write. Commit callers disable creation so
+  // a deleted hardlink cannot be silently recreated as a new inode.
   let handle: Awaited<ReturnType<typeof open>>;
   try {
     handle = await open(targetPath, "r+");
   } catch (error: unknown) {
     if (errCode(error) === "ENOENT") {
-      handle = await open(targetPath, "w");
+      if (!createIfMissing) {
+        throw new Error(
+          `[E_FILE_CHANGED] The target ${targetPath} disappeared before the in-place write. Nothing was modified.`,
+        );
+      }
+      try {
+        // Exclusive creation prevents a target that appears between the
+        // failed r+ open and this fallback from being truncated.
+        handle = await open(targetPath, "wx", mode ?? 0o666);
+      } catch (createError: unknown) {
+        if (errCode(createError) === "EEXIST") {
+          throw new Error(
+            `[E_FILE_CHANGED] The target ${targetPath} appeared before the in-place write. Nothing was modified.`,
+          );
+        }
+        throw createError;
+      }
     } else {
       throw error;
     }

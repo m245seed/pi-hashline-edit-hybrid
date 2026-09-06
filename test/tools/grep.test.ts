@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { withStateDir } from "../support/env";
 import { makeProject, runTool, textOf, writeFileAt } from "../support/tools";
 
@@ -13,8 +13,6 @@ import { mkdirSync } from "fs";
 const grepTool = buildGrepToolDef();
 const editTool = buildEditToolDef();
 
-;
-
 beforeEach(() => {
   withStateDir();
   resetServed();
@@ -28,8 +26,16 @@ describe("grep tool (spec §24)", () => {
   it("returns anchored match lines that are immediately editable", async () => {
     const dir = makeProject();
     mkdirSync(join(dir, "src"));
-    writeFileAt(dir, "src/foo.ts", "function parseInput(value) {\n  return value.trim();\n}\n");
-    const result = await runTool(grepTool, { pattern: "parseInput", path: "." }, dir);
+    writeFileAt(
+      dir,
+      "src/foo.ts",
+      "function parseInput(value) {\n  return value.trim();\n}\n",
+    );
+    const result = await runTool(
+      grepTool,
+      { pattern: "parseInput", path: "." },
+      dir,
+    );
     expect(result.isError).toBeFalsy();
     const text = textOf(result);
     expect(text).toContain("src/foo.ts");
@@ -42,7 +48,15 @@ describe("grep tool (spec §24)", () => {
     // grep → edit without a read (spec §24).
     const edited = await runTool(
       editTool,
-      { path: "src/foo.ts", edits: [{ range: [anchor, anchor], lines: ["function parseInput(value: string) {"] }] },
+      {
+        path: "src/foo.ts",
+        edits: [
+          {
+            range: [anchor, anchor],
+            lines: ["function parseInput(value: string) {"],
+          },
+        ],
+      },
       dir,
     );
     expect(edited.isError).toBeFalsy();
@@ -54,8 +68,14 @@ describe("grep tool (spec §24)", () => {
   it("serves match and context lines", async () => {
     const dir = makeProject();
     writeFileAt(dir, "a.ts", "one\ntwo target\nthree\nfour\n");
-    const result = await runTool(grepTool, { pattern: "target", path: ".", context: 1 }, dir);
-    const rows = textOf(result).split("\n").filter((l) => /^[A-Za-z0-9]{4}│/.test(l));
+    const result = await runTool(
+      grepTool,
+      { pattern: "target", path: ".", context: 1 },
+      dir,
+    );
+    const rows = textOf(result)
+      .split("\n")
+      .filter((l) => /^[A-Za-z0-9]{4}│/.test(l));
     expect(rows.length).toBe(3);
     // All three shown rows are served.
     for (const row of rows) {
@@ -69,20 +89,36 @@ describe("grep tool (spec §24)", () => {
     writeFileAt(dir, "b.js", "alpha\n");
     writeFileAt(dir, "c.ts", "ALPHA\n");
 
-    const literal = await runTool(grepTool, { pattern: "Alpha", path: ".", literal: true }, dir);
+    const literal = await runTool(
+      grepTool,
+      { pattern: "Alpha", path: ".", literal: true },
+      dir,
+    );
     expect(textOf(literal)).toContain("Alpha");
 
-    const ic = await runTool(grepTool, { pattern: "alpha", path: ".", ignoreCase: true }, dir);
+    const ic = await runTool(
+      grepTool,
+      { pattern: "alpha", path: ".", ignoreCase: true },
+      dir,
+    );
     const icText = textOf(ic);
     expect(icText).toContain("Alpha");
     expect(icText).toContain("alpha");
     expect(icText).toContain("ALPHA");
 
-    const globbed = await runTool(grepTool, { pattern: "alpha", path: ".", glob: "*.ts", ignoreCase: true }, dir);
+    const globbed = await runTool(
+      grepTool,
+      { pattern: "alpha", path: ".", glob: "*.ts", ignoreCase: true },
+      dir,
+    );
     const globbedText = textOf(globbed);
     expect(globbedText).not.toContain("b.js");
 
-    const limited = await runTool(grepTool, { pattern: "alpha", path: ".", ignoreCase: true, limit: 1 }, dir);
+    const limited = await runTool(
+      grepTool,
+      { pattern: "alpha", path: ".", ignoreCase: true, limit: 1 },
+      dir,
+    );
     expect(textOf(limited)).toContain("matches limit reached");
   });
 
@@ -96,13 +132,34 @@ describe("grep tool (spec §24)", () => {
 
   it("validates the pattern field", async () => {
     const dir = makeProject();
-    await expect(runTool(grepTool, { path: "." }, dir)).rejects.toThrow(/E_BAD_SHAPE/);
+    await expect(runTool(grepTool, { path: "." }, dir)).rejects.toThrow(
+      /E_BAD_SHAPE/,
+    );
+  });
+
+  it("rejects malformed optional option types", async () => {
+    const dir = makeProject();
+    await expect(
+      runTool(grepTool, { pattern: "x", path: 1 }, dir),
+    ).rejects.toThrow(/E_BAD_SHAPE/);
+    await expect(
+      runTool(grepTool, { pattern: "x", ignoreCase: "yes" }, dir),
+    ).rejects.toThrow(/E_BAD_SHAPE/);
+    await expect(
+      runTool(grepTool, { pattern: "x", literal: 1 }, dir),
+    ).rejects.toThrow(/E_BAD_SHAPE/);
+    await expect(
+      runTool(grepTool, { pattern: "x", path: "bad\0path" }, dir),
+    ).rejects.toThrow(/E_BAD_SHAPE/);
   });
 
   it("does not serve lines from files it cannot read", async () => {
     const dir = makeProject();
     writeFileAt(dir, "a.ts", "find me\n");
-    require("fs").writeFileSync(join(dir, "bin.dat"), Buffer.from([0xff, 0xfe, 0x61, 0x00]));
+    require("fs").writeFileSync(
+      join(dir, "bin.dat"),
+      Buffer.from([0xff, 0xfe, 0x61, 0x00]),
+    );
     const result = await runTool(grepTool, { pattern: "find", path: "." }, dir);
     expect(result.isError).toBeFalsy();
     expect(textOf(result)).toContain("a.ts");
@@ -110,8 +167,15 @@ describe("grep tool (spec §24)", () => {
 
   it("notices when matching files were skipped as unreadable", async () => {
     const dir = makeProject();
-    require("fs").writeFileSync(join(dir, "bin.dat"), Buffer.from([0xff, 0xfe, 0x61, 0x00]));
-    const result = await runTool(grepTool, { pattern: "a", path: ".", glob: "bin.dat" }, dir);
+    require("fs").writeFileSync(
+      join(dir, "bin.dat"),
+      Buffer.from([0xff, 0xfe, 0x61, 0x00]),
+    );
+    const result = await runTool(
+      grepTool,
+      { pattern: "a", path: ".", glob: "bin.dat" },
+      dir,
+    );
     expect(result.isError).toBeFalsy();
     const text = textOf(result);
     expect(text).toContain("1 file(s) skipped");
@@ -123,10 +187,16 @@ describe("grep tool (spec §24)", () => {
     const lines: string[] = [];
     for (let i = 0; i < 400; i++) lines.push(`line ${i} ${"y".repeat(200)}`);
     writeFileAt(dir, "big.log", lines.join("\n") + "\n");
-    const result = await runTool(grepTool, { path: "big.log", pattern: "line", limit: 400 }, dir);
+    const result = await runTool(
+      grepTool,
+      { path: "big.log", pattern: "line", limit: 400 },
+      dir,
+    );
     const text = textOf(result);
     expect(text).toContain("output limit reached");
-    const visibleRows = text.split("\n").filter((l) => /^[A-Za-z0-9]{4}│/.test(l));
+    const visibleRows = text
+      .split("\n")
+      .filter((l) => /^[A-Za-z0-9]{4}│/.test(l));
     const { getLedger } = await import("../../src/served/ledger");
     const ledger = getLedger().get(join(dir, "big.log"));
     const servedCount = ledger ? ledger.size : 0;
@@ -141,7 +211,11 @@ describe("grep tool (spec §24)", () => {
   it("shows no anchors for CR-only files instead of misaligned rows", async () => {
     const dir = makeProject();
     writeFileAt(dir, "cr.txt", "alpha\rbravo\rcharlie\r");
-    const result = await runTool(grepTool, { path: "cr.txt", pattern: "bravo" }, dir);
+    const result = await runTool(
+      grepTool,
+      { path: "cr.txt", pattern: "bravo" },
+      dir,
+    );
     expect(result.isError).toBeFalsy();
     const text = textOf(result);
     expect(text).toContain("CR-only line endings");

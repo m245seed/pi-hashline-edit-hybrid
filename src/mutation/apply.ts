@@ -176,7 +176,9 @@ function prepareSpans(
           : prefEol;
       const byteStart = offsets[op.start]!;
       const byteEnd = op.end < n - 1 ? offsets[op.end + 1]! : rawLen;
-      const oldRangeTexts = lines.slice(op.start, op.end + 1).map((l) => l.text);
+      const oldRangeTexts = lines
+        .slice(op.start, op.end + 1)
+        .map((l) => l.text);
       const insertBytes = joinNewLines(op.lines, prefEol, finalEol);
       const vanishesLast =
         byteEnd === rawLen &&
@@ -211,15 +213,18 @@ function prepareSpans(
               ? ""
               : lines[i]!.eol
           : prefEol;
-        const byteStart = offsets[i]! + lines[i]!.text.length + lines[i]!.eol.length;
-        const prefix = atEof && lines[i]!.eol === "" && op.lines.length > 0 ? prefEol : "";
+        const byteStart =
+          offsets[i]! + lines[i]!.text.length + lines[i]!.eol.length;
+        const prefix =
+          atEof && lines[i]!.eol === "" && op.lines.length > 0 ? prefEol : "";
         const finalEolAtEof = finalEol;
         const vanishesLast =
           atEof &&
           op.lines.length > 0 &&
           op.lines[op.lines.length - 1] === "" &&
           finalEolAtEof === "";
-        const insertBytes = prefix + joinNewLines(op.lines, prefEol, finalEolAtEof);
+        const insertBytes =
+          prefix + joinNewLines(op.lines, prefEol, finalEolAtEof);
         spans.push({
           requestIndex: op.requestIndex,
           opKind: "insert",
@@ -251,7 +256,10 @@ function prepareSpans(
       }
     }
   }
-  return { spans, unusedFinalNewline: finalNewline !== "preserve" && !reachesEof };
+  return {
+    spans,
+    unusedFinalNewline: finalNewline !== "preserve" && !reachesEof,
+  };
 }
 
 export function applyTransaction(
@@ -262,7 +270,12 @@ export function applyTransaction(
 ): ApplyResult {
   const finalNewline = options.finalNewline ?? "preserve";
   const originalText = joinTextLines(doc.lines);
-  const { spans, unusedFinalNewline } = prepareSpans(doc, ops, finalNewline, originalText);
+  const { spans, unusedFinalNewline } = prepareSpans(
+    doc,
+    ops,
+    finalNewline,
+    originalText,
+  );
   const lines = doc.lines;
 
   if (spans.length > 0) {
@@ -320,7 +333,10 @@ export function applyTransaction(
     };
   }
 
-  const resultDoc: Document = { bom: doc.bom, lines: splitTextLines(resultText) };
+  const resultDoc: Document = {
+    bom: doc.bom,
+    lines: splitTextLines(resultText),
+  };
   const resultLines = resultDoc.lines.map((l) => l.text);
 
   // ── Anchor walk ──────────────────────────────────────────────────────
@@ -341,12 +357,19 @@ export function applyTransaction(
       resultPos++;
     }
     if (span.opKind === "edit") {
-      const oldRange = oldTexts.slice(span.firstChangedOld, span.lastTouchedOld + 1);
-      const mapping = alignSequences(oldRange, span.newLines);
+      const oldRange = oldTexts.slice(
+        span.firstChangedOld,
+        span.lastTouchedOld + 1,
+      );
+      const mapping =
+        oldRange.length > 3000 && span.newLines.length > 3000
+          ? alignSequences(...internIds(oldRange, span.newLines))
+          : alignSequences(oldRange, span.newLines);
       for (let j = 0; j < span.effectiveNewLines; j++) {
         const oldIdx = mapping.get(j);
         if (oldIdx !== undefined) {
-          newAnchors[resultPos] = anchorState.anchors[span.firstChangedOld + oldIdx]!;
+          newAnchors[resultPos] =
+            anchorState.anchors[span.firstChangedOld + oldIdx]!;
           preservedOld.add(span.firstChangedOld + oldIdx);
         } else {
           newAnchors[resultPos] = allocator.allocate(span.newLines[j]!);
@@ -454,12 +477,22 @@ export function buildDiffRows(
   const newStart = Math.max(0, prefix - contextLines);
   const oldEnd = oldTexts.length - Math.max(0, suffixCount - contextLines);
   const newEnd = newTexts.length - Math.max(0, suffixCount - contextLines);
-  const oldMid = oldStart === 0 && oldEnd === oldTexts.length ? oldTexts : oldTexts.slice(oldStart, oldEnd);
-  const newMid = newStart === 0 && newEnd === newTexts.length ? newTexts : newTexts.slice(newStart, newEnd);
+  const oldMid =
+    oldStart === 0 && oldEnd === oldTexts.length
+      ? oldTexts
+      : oldTexts.slice(oldStart, oldEnd);
+  const newMid =
+    newStart === 0 && newEnd === newTexts.length
+      ? newTexts
+      : newTexts.slice(newStart, newEnd);
   const oldAnchorsMid =
-    oldStart === 0 && oldEnd === oldAnchors.length ? oldAnchors : oldAnchors.slice(oldStart, oldEnd);
+    oldStart === 0 && oldEnd === oldAnchors.length
+      ? oldAnchors
+      : oldAnchors.slice(oldStart, oldEnd);
   const newAnchorsMid =
-    newStart === 0 && newEnd === newAnchors.length ? newAnchors : newAnchors.slice(newStart, newEnd);
+    newStart === 0 && newEnd === newAnchors.length
+      ? newAnchors
+      : newAnchors.slice(newStart, newEnd);
 
   if (oldMid.length === 0 && newMid.length === 0) return [];
 
@@ -480,12 +513,20 @@ export function buildDiffRows(
     if (part.added || part.removed) {
       if (part.added) {
         for (let k = 0; k < count; k++) {
-          rows.push({ prefix: "+", anchor: newAnchorsMid[newPos]!, text: newMid[newPos]! });
+          rows.push({
+            prefix: "+",
+            anchor: newAnchorsMid[newPos]!,
+            text: newMid[newPos]!,
+          });
           newPos++;
         }
       } else {
         for (let k = 0; k < count; k++) {
-          rows.push({ prefix: "-", anchor: oldAnchorsMid[oldPos]!, text: oldMid[oldPos]! });
+          rows.push({
+            prefix: "-",
+            anchor: oldAnchorsMid[oldPos]!,
+            text: oldMid[oldPos]!,
+          });
           oldPos++;
         }
       }
@@ -519,7 +560,11 @@ export function buildDiffRows(
         oldPos += skipStart;
       }
       for (let k = start; k < end; k++) {
-        rows.push({ prefix: " ", anchor: newAnchorsMid[newPos]!, text: newMid[newPos]! });
+        rows.push({
+          prefix: " ",
+          anchor: newAnchorsMid[newPos]!,
+          text: newMid[newPos]!,
+        });
         newPos++;
         oldPos++;
       }
@@ -528,7 +573,11 @@ export function buildDiffRows(
         newPos += middleSkipped;
         oldPos += middleSkipped;
         for (let k = 0; k < tailCount; k++) {
-          rows.push({ prefix: " ", anchor: newAnchorsMid[newPos]!, text: newMid[newPos]! });
+          rows.push({
+            prefix: " ",
+            anchor: newAnchorsMid[newPos]!,
+            text: newMid[newPos]!,
+          });
           newPos++;
           oldPos++;
         }

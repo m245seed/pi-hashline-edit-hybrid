@@ -40,7 +40,14 @@ export function reconcileState(
   newFingerprints: string[],
 ): ReconcileResult {
   if (newTexts.length !== newFingerprints.length) {
-    throw new Error("reconcileState: fingerprints must be line-aligned with texts");
+    throw new Error(
+      "reconcileState: fingerprints must be line-aligned with texts",
+    );
+  }
+  if (oldState) {
+    if (new Set(oldState.anchors).size !== oldState.anchors.length) {
+      throw new Error("reconcileState: stored anchors are not unique");
+    }
   }
   const allocator = new AnchorAllocator(
     oldState ? new Set(oldState.anchors) : new Set<string>(),

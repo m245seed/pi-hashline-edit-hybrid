@@ -20,11 +20,7 @@ import { Type } from "typebox";
 import { abortIf, debugLog, errCode, sha256Hex } from "../utils";
 import { withFileMutationQueue } from "../filesystem/resolve-target";
 import { resolveMutationTarget, renderAutoReadPreview } from "./shared";
-import {
-  MAX_BYTES,
-  MAX_LINES,
-  HASHLINE_PROTOCOL_ID,
-} from "../constants";
+import { MAX_BYTES, MAX_LINES, HASHLINE_PROTOCOL_ID } from "../constants";
 import { decodeDocument } from "../document/encoding";
 import type { Document } from "../document/lines";
 import { AnchorAllocator } from "../anchors/allocator";
@@ -36,7 +32,12 @@ import {
   anchorSpaceWarning,
 } from "../mutation/transaction";
 import { newTransactionId } from "../state/transaction-journal";
-import { suspiciousContentCheck, LONE_SURROGATE_RE, validateWriteRequest, type WriteRequest } from "../mutation/validate";
+import {
+  suspiciousContentCheck,
+  LONE_SURROGATE_RE,
+  validateWriteRequest,
+  type WriteRequest,
+} from "../mutation/validate";
 import { checkRangeServed, formatRangeFailure } from "../served/authorize";
 import { pruneServedPath } from "../served/ledger";
 import { hashlineDetails } from "../render/result-details";
@@ -91,7 +92,6 @@ const W_GUIDELINES = [
   "Content resembling pasted hashline output is rejected with E_DISPLAY_LIKE_CONTENT; pass allow_display_like_content: true only for genuinely literal content.",
 ];
 
-
 function encodeContent(content: string): { doc: Document; raw: Buffer } {
   const raw = Buffer.from(content, "utf-8");
   const doc = decodeDocument(raw, "write content");
@@ -110,7 +110,10 @@ export function buildWriteToolDef(): ToolDefinition<any, WriteToolDetails> {
 
     async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
       const request = validateWriteRequest(rawParams);
-      const mutationTargetPath = await resolveMutationTarget(request.path, ctx.cwd);
+      const mutationTargetPath = await resolveMutationTarget(
+        request.path,
+        ctx.cwd,
+      );
       return runWrite({
         request,
         mutationTargetPath,
@@ -126,12 +129,10 @@ interface RunWriteInput {
   signal?: AbortSignal;
 }
 
-async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition<any, WriteToolDetails>["execute"]>> {
-  const {
-    request,
-    mutationTargetPath,
-    signal,
-  } = input;
+async function runWrite(
+  input: RunWriteInput,
+): Promise<ReturnType<ToolDefinition<any, WriteToolDetails>["execute"]>> {
+  const { request, mutationTargetPath, signal } = input;
   const requestPath = request.path;
   const content = request.content;
   const replaceExisting = request.replace_existing === true;
@@ -139,7 +140,6 @@ async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition
   const allowDisplayLike = request.allow_display_like_content === true;
 
   return withFileMutationQueue(mutationTargetPath, async () => {
-
     // Size / shape policy (PH-WRITE, §31.8).
     if (LONE_SURROGATE_RE.test(content)) {
       throw new Error(
@@ -197,12 +197,21 @@ async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition
       // line with its anchor, so undo of a create restores a consistent
       // empty-file state (doc.lines, anchors, and fingerprints stay aligned).
       docBefore = { bom: "", lines: [{ text: "", eol: "" }] };
-      const allocator = new AnchorAllocator(new Set<string>(), new Set<string>());
+      const allocator = new AnchorAllocator(
+        new Set<string>(),
+        new Set<string>(),
+      );
       anchorsBefore = [allocator.allocate("")];
       fingerprintsBefore = fingerprintHexes([""]);
       retiredBefore = new Set<string>();
       anchorsAfter = newTexts.map((text) => allocator.allocate(text));
-      retiredAfter = new Set<string>();
+      // The zero-byte convention gives the pre-create state one synthetic
+      // empty-line anchor. If the created content does not preserve it, it is
+      // retired just like any other deleted line and must never be reused.
+      const activeAfter = new Set(anchorsAfter);
+      retiredAfter = new Set(
+        anchorsBefore.filter((anchor) => !activeAfter.has(anchor)),
+      );
     } else {
       const file = await loadAnchoredFile(mutationTargetPath, requestPath);
       rawBefore = file.raw;
@@ -249,7 +258,10 @@ async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition
     }
 
     const warnings: string[] = [];
-    const pressure = anchorSpaceWarning(new Set(anchorsAfter).size, retiredAfter.size);
+    const pressure = anchorSpaceWarning(
+      new Set(anchorsAfter).size,
+      retiredAfter.size,
+    );
     if (pressure) warnings.push(pressure);
 
     const transactionId = newTransactionId();
@@ -286,11 +298,8 @@ async function runWrite(input: RunWriteInput): Promise<ReturnType<ToolDefinition
     pruneServedPath(mutationTargetPath, current);
 
     // Bounded anchored preview (PH-WRITE-002).
-    const { text: previewText, servedRows: previewRows } = renderAutoReadPreview(
-      anchorsAfter,
-      newTexts,
-      mutationTargetPath,
-    );
+    const { text: previewText, servedRows: previewRows } =
+      renderAutoReadPreview(anchorsAfter, newTexts, mutationTargetPath);
 
     debugLog("write committed", { path: mutationTargetPath, warnings });
 

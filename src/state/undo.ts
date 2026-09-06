@@ -50,25 +50,50 @@ export function getUndoRecord(path: string): UndoRecord | undefined {
   if (!row) return undefined;
   const beforeLineCount = row.before_anchors.length / 4;
   const afterLineCount = row.after_anchors.length / 4;
+  const beforeAnchors = decodeAnchorsBlob(row.before_anchors, beforeLineCount);
+  const afterAnchors = decodeAnchorsBlob(row.after_anchors, afterLineCount);
+  const beforeRetired = decodeRetiredBlob(row.before_retired);
+  const afterRetired = decodeRetiredBlob(row.after_retired);
+  if (beforeAnchors.some((anchor) => beforeRetired.has(anchor))) {
+    throw new Error("Corrupt undo record: before anchor is retired");
+  }
+  if (afterAnchors.some((anchor) => afterRetired.has(anchor))) {
+    throw new Error("Corrupt undo record: after anchor is retired");
+  }
   return {
     path: row.path,
     transactionId: row.transaction_id,
     beforeBytes: Buffer.from(row.before_bytes),
     afterChecksum: row.after_checksum,
-    beforeAnchors: decodeAnchorsBlob(row.before_anchors, beforeLineCount),
-    beforeFingerprints: decodeFingerprintsBlob(row.before_fingerprints, beforeLineCount),
-    beforeRetired: decodeRetiredBlob(row.before_retired),
-    afterAnchors: decodeAnchorsBlob(row.after_anchors, afterLineCount),
-    afterFingerprints: decodeFingerprintsBlob(row.after_fingerprints, afterLineCount),
-    afterRetired: decodeRetiredBlob(row.after_retired),
+    beforeAnchors,
+    beforeFingerprints: decodeFingerprintsBlob(
+      row.before_fingerprints,
+      beforeLineCount,
+    ),
+    beforeRetired,
+    afterAnchors,
+    afterFingerprints: decodeFingerprintsBlob(
+      row.after_fingerprints,
+      afterLineCount,
+    ),
+    afterRetired,
   };
 }
 
 export function deleteUndoRecord(path: string): void {
-  withBusyRetry(() => cachedPrepare(`DELETE FROM undo WHERE path = ?`).run(path));
+  withBusyRetry(() =>
+    cachedPrepare(`DELETE FROM undo WHERE path = ?`).run(path),
+  );
 }
 
-export async function loadUndoRecord(path: string): Promise<UndoRecord | undefined> {
+/** Use only inside an existing withTransaction callback. */
+export function deleteUndoRecordInTransaction(path: string): void {
+  cachedPrepare(`DELETE FROM undo WHERE path = ?`).run(path);
+}
+
+export async function loadUndoRecord(
+  path: string,
+): Promise<UndoRecord | undefined> {
   await loadStore();
   return getUndoRecord(path);
 }

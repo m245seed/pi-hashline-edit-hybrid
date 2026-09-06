@@ -12,12 +12,18 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { abortIf, isRec, normPosInt, rejectUnknownFields } from "../utils";
-import { DEFAULT_READ_LIMIT, READ_MAX_OUTPUT_BYTES, HASHLINE_PROTOCOL_ID } from "../constants";
+import {
+  DEFAULT_READ_LIMIT,
+  READ_MAX_OUTPUT_BYTES,
+  HASHLINE_PROTOCOL_ID,
+} from "../constants";
 import { resolveMutationTarget } from "./shared";
+import { withFileMutationQueue } from "../filesystem/resolve-target";
 import { loadAnchoredFile } from "../mutation/transaction";
 import { renderLinesBounded } from "../render/engine";
 import { serveLines, servedWindowNotice } from "../served/ledger";
 import { hashlineDetails } from "../render/result-details";
+import { assertPath } from "../mutation/validate";
 
 const READ_ROOT_KEYS = new Set(["path", "offset", "limit"]);
 export interface ReadToolDetails {
@@ -35,7 +41,10 @@ const readSchema = Type.Object(
       Type.Integer({ minimum: 1, description: "1-indexed line to start from" }),
     ),
     limit: Type.Optional(
-      Type.Integer({ minimum: 1, description: "Maximum number of lines to return" }),
+      Type.Integer({
+        minimum: 1,
+        description: "Maximum number of lines to return",
+      }),
     ),
   },
   {
@@ -65,82 +74,86 @@ export function buildReadToolDef(): ToolDefinition<any, ReadToolDetails> {
     async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
       const params = rawParams as Record<string, unknown>;
       if (!isRec(params)) {
-        throw new Error('[E_BAD_SHAPE] read parameters must be an object.');
+        throw new Error("[E_BAD_SHAPE] read parameters must be an object.");
       }
       rejectUnknownFields(params, READ_ROOT_KEYS, "read request");
-      if (typeof params?.path !== "string" || params.path.length === 0) {
-        throw new Error('[E_BAD_SHAPE] A non-empty "path" string is required.');
-      }
+      const requestPath = assertPath(params.path);
       const offset = normPosInt(params.offset, "offset");
       const limit = normPosInt(params.limit, "limit");
-      const requestPath = params.path;
       const realPath = await resolveMutationTarget(requestPath, ctx.cwd);
-      abortIf(signal);
+      return withFileMutationQueue(realPath, async () => {
+        abortIf(signal);
 
-      const file = await loadAnchoredFile(realPath, requestPath);
-      const total = file.texts.length;
+        const file = await loadAnchoredFile(realPath, requestPath);
+        const total = file.texts.length;
 
-      if ((offset ?? 1) > total) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Offset ${offset} is beyond end of file (${total} lines total). Use offset=1 to read from the start.`,
+        if ((offset ?? 1) > total) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Offset ${offset} is beyond end of file (${total} lines total). Use offset=1 to read from the start.`,
+              },
+            ],
+            details: {
+              revision: file.checksum,
+              totalLines: total,
+              shownLines: 0,
+              hashline: hashlineDetails({
+                outcome: "no_match",
+                code: "OFFSET_BEYOND_EOF",
+                fileSha256: file.checksum,
+                servedRows: 0,
+              }),
             },
-          ],
+          };
+        }
+
+        const start = (offset ?? 1) - 1;
+        const end = Math.min(start + (limit ?? DEFAULT_READ_LIMIT), total);
+        const bounded = renderLinesBounded(
+          file.anchors,
+          file.texts,
+          start,
+          end,
+        );
+        const evictedRows = serveLines(realPath, bounded.served);
+
+        let output = bounded.text;
+        let nextOffset: number | undefined;
+        if (total === 1 && file.texts[0] === "" && file.raw.length === 0) {
+          output = `${output}\n[File is empty. Use edit or insert to add content.]`;
+        } else if (bounded.truncated) {
+          // Byte budget dropped rows: continuation resumes at the first
+          // dropped line (PH-OUTPUT-006).
+          nextOffset = bounded.nextLine + 1;
+          output += `\n\n[Output truncated at the ${READ_MAX_OUTPUT_BYTES / 1024}KB budget; showing lines ${start + 1}-${bounded.nextLine} of ${total}. Use offset=${nextOffset} to continue.]`;
+        } else if (end < total) {
+          nextOffset = end + 1;
+          output += `\n\n[Showing lines ${start + 1}-${end} of ${total}. Use offset=${nextOffset} to continue.]`;
+        } else if (total > 1) {
+          output += `\n\n[Showing lines ${start + 1}-${end} of ${total}.]`;
+        }
+        if (evictedRows > 0) {
+          output += servedWindowNotice(evictedRows);
+        }
+
+        return {
+          content: [{ type: "text", text: output }],
           details: {
             revision: file.checksum,
             totalLines: total,
-            shownLines: 0,
+            shownLines: bounded.served.length,
+            ...(nextOffset !== undefined ? { nextOffset } : {}),
             hashline: hashlineDetails({
-              outcome: "no_match",
-              code: "OFFSET_BEYOND_EOF",
+              outcome: "success",
+              code: "OK",
               fileSha256: file.checksum,
-              servedRows: 0,
+              servedRows: bounded.served.length,
             }),
           },
         };
-      }
-
-      const start = (offset ?? 1) - 1;
-      const end = Math.min(start + (limit ?? DEFAULT_READ_LIMIT), total);
-      const bounded = renderLinesBounded(file.anchors, file.texts, start, end);
-      const evictedRows = serveLines(realPath, bounded.served);
-
-      let output = bounded.text;
-      let nextOffset: number | undefined;
-      if (total === 1 && file.texts[0] === "" && file.raw.length === 0) {
-        output = `${output}\n[File is empty. Use edit or insert to add content.]`;
-      } else if (bounded.truncated) {
-        // Byte budget dropped rows: continuation resumes at the first
-        // dropped line (PH-OUTPUT-006).
-        nextOffset = bounded.nextLine + 1;
-        output += `\n\n[Output truncated at the ${READ_MAX_OUTPUT_BYTES / 1024}KB budget; showing lines ${start + 1}-${bounded.nextLine} of ${total}. Use offset=${nextOffset} to continue.]`;
-      } else if (end < total) {
-        nextOffset = end + 1;
-        output += `\n\n[Showing lines ${start + 1}-${end} of ${total}. Use offset=${nextOffset} to continue.]`;
-      } else if (total > 1) {
-        output += `\n\n[Showing lines ${start + 1}-${end} of ${total}.]`;
-      }
-      if (evictedRows > 0) {
-        output += servedWindowNotice(evictedRows);
-      }
-
-      return {
-        content: [{ type: "text", text: output }],
-        details: {
-          revision: file.checksum,
-          totalLines: total,
-          shownLines: bounded.served.length,
-          ...(nextOffset !== undefined ? { nextOffset } : {}),
-          hashline: hashlineDetails({
-            outcome: "success",
-            code: "OK",
-            fileSha256: file.checksum,
-            servedRows: bounded.served.length,
-          }),
-        },
-      };
+      });
     },
   };
 }

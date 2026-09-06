@@ -91,7 +91,7 @@ npm run test:coverage
 
 The suite covers the spec's required areas (§61–§62): anchor engine (unique allocation, duplicate runs, determinism, retirement, reconciliation), served state (unseen/stale ranges, error feedback becoming served, restart clearing), strict payload handling (suspicious hashline content and the escape hatch), range semantics, multi-edit atomicity, undo byte fidelity, filesystem behaviors (symlinks, hard links, modes, precommit races, temp cleanup), crash recovery, and property/fuzz tests — thousands of chained random mutations and external-modification fuzz runs, with every outcome required to be either a safe successful edit or a clean rejection.
 
-Coverage gates in `test:coverage` are lines 93 / statements 92 / functions 90 / branches 85; the safety-critical engine modules (mutation, anchors, served, render) run well above the spec's recommended 95 % meaningful-branch coverage.
+Coverage gates in `test:coverage` are lines 92 / statements 91 / functions 90 / branches 85; the safety-critical engine modules (mutation, anchors, served, render) run well above the spec's recommended 95 % meaningful-branch coverage.
 
 ## License
 
