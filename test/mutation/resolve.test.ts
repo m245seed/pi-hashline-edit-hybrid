@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   staleAnchorMessage,
+  unknownAnchorMessage,
   reversedRangeMessage,
 } from "../../src/mutation/resolve";
 import { resetServed, servedText } from "../../src/served/ledger";
@@ -29,6 +30,24 @@ describe("anchor resolution (spec §10)", () => {
     expect(message).toContain("Nothing was modified.");
     expect(servedText("/tmp/f.ts", "A000")).toBe("a");
     expect(servedText("/tmp/f.ts", "A001")).toBe("b");
+
+  });
+  it("reports unknown anchors as E_ANCHOR_NOT_SERVED without a stale claim", () => {
+    const message = unknownAnchorMessage("/tmp/f.ts", "Zz9z", ["WR4y", "A001"]);
+    expect(message).toContain("[E_ANCHOR_NOT_SERVED]");
+    expect(message).toContain("never allocated");
+    expect(message).not.toContain("file content changed");
+    expect(message).toContain("Use read()");
+  });
+
+  it("suggests the unique case-insensitive near-match", () => {
+    const message = unknownAnchorMessage("/tmp/f.ts", "wr4Y", ["WR4y", "A001"]);
+    expect(message).toContain('Did you mean "WR4y"?');
+  });
+
+  it("stays silent when case-folded anchors collide", () => {
+    const message = unknownAnchorMessage("/tmp/f.ts", "Ab12", ["AB12", "ab12"]);
+    expect(message).not.toContain("Did you mean");
   });
 
   it("shows and serves the complete text of long lines (spec §8/§9)", () => {

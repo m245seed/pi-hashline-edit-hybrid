@@ -24,7 +24,7 @@ import {
   validateEditRequest,
   type EditRequest,
 } from "../mutation/validate";
-import { staleAnchorMessage, reversedRangeMessage } from "../mutation/resolve";
+import { staleAnchorMessage, unknownAnchorMessage, reversedRangeMessage } from "../mutation/resolve";
 import {
   applyTransaction,
   type EditOp,
@@ -165,24 +165,28 @@ async function runEdit(input: RunEditInput): Promise<ReturnType<ToolDefinition<a
       const end = anchorIndex.get(endAnchor);
       if (start === undefined) {
         throw new Error(
-          staleAnchorMessage(
-            mutationTargetPath,
-            startAnchor,
-            file.anchors,
-            file.texts,
-            end,
-          ),
+          file.retired.has(startAnchor)
+            ? staleAnchorMessage(
+                mutationTargetPath,
+                startAnchor,
+                file.anchors,
+                file.texts,
+                end,
+              )
+            : unknownAnchorMessage(request.path, startAnchor, file.anchors),
         );
       }
       if (end === undefined) {
         throw new Error(
-          staleAnchorMessage(
-            mutationTargetPath,
-            endAnchor,
-            file.anchors,
-            file.texts,
-            start,
-          ),
+          file.retired.has(endAnchor)
+            ? staleAnchorMessage(
+                mutationTargetPath,
+                endAnchor,
+                file.anchors,
+                file.texts,
+                start,
+              )
+            : unknownAnchorMessage(request.path, endAnchor, file.anchors),
         );
       }
       if (start > end) {

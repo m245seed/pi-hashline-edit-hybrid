@@ -350,6 +350,41 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
     expect(readFileAt(joinPath(dir, "a.ts"))).toBe("ONE\ntwo\nthree\n");
   });
 
+  it("classifies never-allocated anchors as E_ANCHOR_NOT_SERVED, not stale", async () => {
+    const dir = makeProject();
+    writeFileAt(dir, "a.ts", "one\ntwo\n");
+    await runTool(readTool, { path: "a.ts" }, dir);
+    // "Zz9z" was never shown for this file — a constructed anchor, and the
+    // file is untouched, so the failure must NOT claim a content change.
+    await expect(
+      runTool(
+        editTool,
+        { path: "a.ts", edits: [{ range: ["Zz9z", "Zz9z"], lines: ["x"] }] },
+        dir,
+      ),
+    ).rejects.toThrow(/E_ANCHOR_NOT_SERVED[\s\S]*never allocated/);
+    expect(readFileAt(joinPath(dir, "a.ts"))).toBe("one\ntwo\n");
+  });
+
+  it("suggests the unique case-insensitive near-match for typos", async () => {
+    const dir = makeProject();
+    writeFileAt(dir, "a.ts", "one\ntwo\n");
+    const read = await runTool(readTool, { path: "a.ts" }, dir);
+    const anchors = anchorsFromRead(textOf(read));
+    const [first] = [...anchors.values()];
+    const typo = first!.replace(/[A-Za-z]/, (c) =>
+      c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase(),
+    );
+    await expect(
+      runTool(
+        editTool,
+        { path: "a.ts", edits: [{ range: [typo, typo], lines: ["x"] }] },
+        dir,
+      ),
+    ).rejects.toThrow(new RegExp(`Did you mean "${first}"`));
+    expect(readFileAt(joinPath(dir, "a.ts"))).toBe("one\ntwo\n");
+  });
+
   it("enforces expected_revision CAS mode (spec §27)", async () => {
     const dir = makeProject();
     writeFileAt(dir, "a.ts", "one\ntwo\n");
@@ -375,7 +410,8 @@ describe("edit tool end-to-end (spec §13, §70)", () => {
     expect(readFileAt(joinPath(dir, "a.ts"))).toBe("one\ntwo\nthree\n");
   });
 
-  it("preserves BOM, CRLF, and mode across edits", async () => {
+  // POSIX permission bits do not exist on Windows (mode is always 0o666).
+  it.skipIf(process.platform === "win32")("preserves BOM, CRLF, and mode across edits", async () => {
     const dir = makeProject();
     const path = writeFileAt(dir, "a.ts", "\uFEFFone\r\ntwo\r\nthree\r\n");
     require("fs").chmodSync(path, 0o754);

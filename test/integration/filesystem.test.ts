@@ -119,7 +119,8 @@ describe("filesystem behaviors (spec §43–§46)", () => {
     expect(textOf(result)).toContain("[W_HARDLINK_NONATOMIC]");
   });
 
-  it("preserves file mode across atomic renames", async () => {
+  // POSIX permission bits do not exist on Windows (mode is always 0o666).
+  it.skipIf(process.platform === "win32")("preserves file mode across atomic renames", async () => {
     const dir = makeProject();
     const path = writeFileAt(dir, "a.ts", "one\ntwo\n");
     require("fs").chmodSync(path, 0o755);

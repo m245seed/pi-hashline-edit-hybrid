@@ -51,6 +51,30 @@ export function staleAnchorMessage(
   return `[E_ANCHOR_STALE] Anchor "${anchor}" is no longer current${location}: the file content changed since that anchor was read. Nothing was modified.${hint}\n\nCurrent context with fresh anchors:\n${text}`;
 }
 
+/**
+ * Unknown-anchor feedback (amends spec §10). An anchor that is neither
+ * active nor retired was never allocated for this file — it was constructed,
+ * not copied from tool output. Reporting it as stale implies a phantom
+ * on-disk change (the file may be completely untouched), which sends the
+ * caller into retry loops. Report the real cause, and offer a
+ * case-insensitive near-match when exactly one exists (transcription slips
+ * like FQhk→Fqhk).
+ */
+export function unknownAnchorMessage(
+  path: string,
+  anchor: string,
+  anchors: readonly string[],
+): string {
+  const folded = anchor.toLowerCase();
+  const near = anchors.filter((a) => a.toLowerCase() === folded);
+  const suggestion = near.length === 1 ? ` Did you mean "${near[0]}"?` : "";
+  return (
+    `[E_ANCHOR_NOT_SERVED] Anchor "${anchor}" is not a valid anchor in ${path}: it was never allocated for this file, so it was never shown to you. ` +
+    `Do not construct or transcribe anchors — copy them verbatim from read/grep/diff output.${suggestion} Nothing was modified.\n\n` +
+    `Use read() (or grep) to view the target region and copy the real anchors.`
+  );
+}
+
 export function reversedRangeMessage(
   path: string,
   startAnchor: string,

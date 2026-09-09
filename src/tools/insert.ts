@@ -13,7 +13,7 @@ import { abortIf } from "../utils";
 import { withFileMutationQueue } from "../filesystem/resolve-target";
 import { resolveMutationTarget, commitAndRenderMutation } from "./shared";
 import { validateInsertRequest } from "../mutation/validate";
-import { staleAnchorMessage } from "../mutation/resolve";
+import { staleAnchorMessage, unknownAnchorMessage } from "../mutation/resolve";
 import {
   applyTransaction,
   type InsertOp,
@@ -122,12 +122,14 @@ async function runInsert(input: RunInsertInput): Promise<ReturnType<ToolDefiniti
       const idx = anchorIndex.get(item.anchor);
       if (idx === undefined) {
         throw new Error(
-          staleAnchorMessage(
-            mutationTargetPath,
-            item.anchor,
-            file.anchors,
-            file.texts,
-          ),
+          file.retired.has(item.anchor)
+            ? staleAnchorMessage(
+                mutationTargetPath,
+                item.anchor,
+                file.anchors,
+                file.texts,
+              )
+            : unknownAnchorMessage(request.path, item.anchor, file.anchors),
         );
       }
       const check = checkRangeServed(mutationTargetPath, file.anchors, file.texts, idx, idx);

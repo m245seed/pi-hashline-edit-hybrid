@@ -2,15 +2,21 @@ import { homedir } from "os";
 import { isAbsolute, resolve as resolvePath, join, dirname } from "path";
 
 function homeBase(): string {
+  if (process.platform === "win32") {
+    // Git-bash sets HOME to a POSIX-style path ("/c/Users/...") that is
+    // meaningless to Win32 APIs - os.homedir() is always right here.
+    return homedir();
+  }
   const envHome = process.env.HOME;
   return envHome && envHome.length > 0 ? envHome : homedir();
 }
 
 function configBase(): string {
-  if (process.platform !== "win32") {
-    const xdg = process.env.XDG_CONFIG_HOME;
-    if (xdg && xdg.length > 0) return xdg;
-  }
+  // XDG_CONFIG_HOME must be honored on every platform: it is how tests (and
+  // sandboxed sessions) isolate the persistent store. Ignoring it on win32
+  // made the test suite read and write the live user store.
+  const xdg = process.env.XDG_CONFIG_HOME;
+  if (xdg && xdg.length > 0) return xdg;
   return join(homeBase(), ".config");
 }
 
